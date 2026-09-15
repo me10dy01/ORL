@@ -1,0 +1,22 @@
+[
+  { "product_id": "P001", "warehouse": "华东仓", "quantity": 120 },
+  { "product_id": "P002", "warehouse": "华东仓", "quantity": 300 },
+  { "product_id": "P003", "warehouse": "华东仓", "quantity": 45 },
+  { "product_id": "P004", "warehouse": "华南仓", "quantity": 200 },
+  { "product_id": "P005", "warehouse": "华东仓", "quantity": 500 },
+  { "product_id": "P006", "warehouse": "华南仓", "quantity": 150 },
+  { "product_id": "P007", "warehouse": "华东仓", "quantity": 20 },
+  { "product_id": "P008", "warehouse": "华南仓", "quantity": 90 },
+  { "product_id": "P009", "warehouse": "华东仓", "quantity": 1000 },
+  { "product_id": "P010", "warehouse": "华南仓", "quantity": 260 },
+  { "product_id": "P011", "warehouse": "华东仓", "quantity": 50 },
+  { "product_id": "P012", "warehouse": "华南仓", "quantity": 400 },
+  { "product_id": "P013", "warehouse": "华东仓", "quantity": 350 },
+  { "product_id": "P014", "warehouse": "华南仓", "quantity": 600 },
+  { "product_id": "P015", "warehouse": "华东仓", "quantity": 800 },
+  { "product_id": "P016", "warehouse": "华南仓", "quantity": 180 },
+  { "product_id": "P017", "warehouse": "华南仓", "quantity": 220 },
+  { "product_id": "P018", "warehouse": "华东仓", "quantity": 75 },
+  { "product_id": "P019", "warehouse": "华东仓", "quantity": 15 },
+  { "product_id": "P020", "warehouse": "华东仓", "quantity": 30 }
+]

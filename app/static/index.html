@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>星辰数码商城 · 智能客服</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>星辰数码商城</h1>
+        <p>智能客服工单系统</p>
+      </div>
+      <button id="new-conv-btn" class="btn primary block">+ 新会话</button>
+      <div class="sidebar-title">历史会话</div>
+      <div class="conv-toolbar">
+        <label class="conv-select-all">
+          <input type="checkbox" id="conv-select-all" /> 全选
+        </label>
+        <button id="conv-delete-selected" class="btn-mini danger" disabled>删除选中</button>
+      </div>
+      <ul id="conv-list" class="conv-list"></ul>
+      <a href="/admin" class="admin-link">⚙ 知识库管理</a>
+    </aside>
+
+    <main class="main">
+      <div id="messages" class="messages">
+        <div class="empty-hint">您好，我是星辰数码商城智能客服。可以咨询退货政策、发货规则，也可以查询订单、商品、库存。</div>
+      </div>
+      <div id="status" class="status-bar hidden"></div>
+      <!-- 常见问题：仅在点击/聚焦输入框时展示 -->
+      <div id="faq-panel" class="faq-panel hidden">
+        <div id="suggest-section" class="suggest-section hidden">
+          <div class="suggest-title">猜你想问</div>
+          <ul id="suggest-list" class="faq-list"></ul>
+        </div>
+        <div id="faq-static-section">
+          <div class="faq-panel-title">常见问题</div>
+          <ul id="faq-list" class="faq-list"></ul>
+        </div>
+      </div>
+      <div class="composer">
+        <input id="input" type="text" placeholder="请输入您的问题" autocomplete="off">
+        <button id="send-btn" class="btn primary">发送</button>
+      </div>
+    </main>
+  </div>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

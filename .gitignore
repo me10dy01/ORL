@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+
+# Env / secrets
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data (future phases)
+*.db
+data/chroma/
+eval_report.json
+
+# 大知识库评测的隔离向量库与剖析结果（派生数据，可用
+# `gen_large_kb` + `eval_rerank_large` / `profile_latency` 重建）
+data/eval/chroma_large/
+data/profiling/

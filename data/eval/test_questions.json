@@ -1,0 +1,227 @@
+{
+  "dataset_name": "星辰数码商城测试问题集",
+  "version": 2,
+  "description": "覆盖 RAG / Tool / Mixed / Multi-turn / 不存在信息 / 错误订单号 / 模糊问题 / 检索困难 / Tool 异常 / RAG 无答案 十类问题。所有实体（P*、ORD*、U*）必须与 data/seed 一致。answer_keywords 用于评估 Answer Accuracy（回答命中任一关键词即视为正确）。",
+  "questions": [
+    {
+      "id": "q_rag_001",
+      "category": "rag",
+      "question": "星辰数码商城的退货政策是什么？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "7 天无理由退货；质量问题 15 天内可退换且运费由商城承担，非质量问题运费由买家承担",
+      "answer_keywords": ["退货"],
+      "notes": "基础 RAG 检索问题"
+    },
+    {
+      "id": "q_rag_002",
+      "category": "rag",
+      "question": "K87 键盘支持退货吗？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": ["P001"],
+      "ground_truth": "支持 7 天无理由退货",
+      "answer_keywords": ["K87"],
+      "notes": "引用具体商品 K87"
+    },
+    {
+      "id": "q_rag_003",
+      "category": "rag",
+      "question": "退货时运费由谁承担？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "质量问题由商城承担，非质量问题（无理由退货）由买家承担",
+      "answer_keywords": ["运费"],
+      "notes": "退货政策中的运费规则"
+    },
+    {
+      "id": "q_rag_004",
+      "category": "rag",
+      "question": "商城下单后多久发货？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "工作日下单 24 小时内发货",
+      "answer_keywords": ["发货"],
+      "notes": "发货规则"
+    },
+    {
+      "id": "q_rag_005",
+      "category": "rag",
+      "question": "耳机的保修期是多久？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "耳机保修期为 2 年",
+      "answer_keywords": ["保修"],
+      "notes": "保修政策"
+    },
+    {
+      "id": "q_tool_001",
+      "category": "tool",
+      "question": "查询订单 ORD20260001 的状态",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["ORD20260001"],
+      "ground_truth": "已发货",
+      "answer_keywords": ["已发货"],
+      "notes": "get_order 工具"
+    },
+    {
+      "id": "q_tool_002",
+      "category": "tool",
+      "question": "K87 机械键盘现在多少钱？",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["P001"],
+      "ground_truth": "299.00 元",
+      "answer_keywords": ["299"],
+      "notes": "search_products + get_product_info 工具"
+    },
+    {
+      "id": "q_tool_003",
+      "category": "tool",
+      "question": "P003 的库存还有多少？",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["P003"],
+      "ground_truth": "45 件（华东仓）",
+      "answer_keywords": ["45"],
+      "notes": "get_inventory 工具"
+    },
+    {
+      "id": "q_tool_004",
+      "category": "tool",
+      "question": "用户 U0002 有哪些订单？",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["U0002", "ORD20260003", "ORD20260005"],
+      "ground_truth": "两笔订单：ORD20260003、ORD20260005",
+      "answer_keywords": ["ORD20260003"],
+      "notes": "get_user_orders 工具"
+    },
+    {
+      "id": "q_tool_005",
+      "category": "tool",
+      "question": "订单 ORD20260006 包含哪些商品？",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["ORD20260006", "P007", "P001"],
+      "ground_truth": "M27 电竞显示器 + K87 机械键盘",
+      "answer_keywords": ["显示器"],
+      "notes": "get_order_items 工具"
+    },
+    {
+      "id": "q_mixed_001",
+      "category": "mixed",
+      "question": "我的订单 ORD20260002 显示待发货，你们什么时候发货？",
+      "history": [],
+      "expected_route": "mixed",
+      "expected_entities": ["ORD20260002"],
+      "ground_truth": "订单状态为待发货；按发货规则工作日 24 小时内发货",
+      "answer_keywords": ["待发货"],
+      "notes": "Tool（订单状态）+ RAG（发货规则）"
+    },
+    {
+      "id": "q_mixed_002",
+      "category": "mixed",
+      "question": "K87 键盘多少钱？买了能退货吗？",
+      "history": [],
+      "expected_route": "mixed",
+      "expected_entities": ["P001"],
+      "ground_truth": "299.00 元；支持 7 天无理由退货",
+      "answer_keywords": ["299"],
+      "notes": "Tool（价格）+ RAG（退货政策）"
+    },
+    {
+      "id": "q_multi_001",
+      "category": "multi_turn",
+      "question": "那运费谁承担？",
+      "history": ["K87 支持退货吗？"],
+      "expected_route": "rag",
+      "expected_entities": ["P001"],
+      "ground_truth": "K87 退货时：质量问题运费由商城承担，非质量问题运费由买家承担",
+      "answer_keywords": ["运费"],
+      "notes": "多轮指代消解，需 Query Rewrite"
+    },
+    {
+      "id": "q_neg_001",
+      "category": "negative",
+      "question": "你们商城卖手机吗？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "知识库无相关依据，商城为数码配件电商，不销售手机",
+      "answer_keywords": ["手机"],
+      "notes": "RAG 无答案，不得强行编造"
+    },
+    {
+      "id": "q_neg_002",
+      "category": "negative",
+      "question": "查询商品 P999 的信息",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["P999"],
+      "ground_truth": "商品不存在",
+      "answer_keywords": ["不存在"],
+      "notes": "Tool 数据不存在场景"
+    },
+    {
+      "id": "q_err_001",
+      "category": "error",
+      "question": "查询订单 ORD99999999 的状态",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["ORD99999999"],
+      "ground_truth": "订单不存在",
+      "answer_keywords": ["不存在"],
+      "notes": "错误订单号"
+    },
+    {
+      "id": "q_amb_001",
+      "category": "ambiguous",
+      "question": "键盘",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": ["P001", "P010"],
+      "ground_truth": "需要澄清：有 K87 机械键盘与 K60 薄膜键盘两款",
+      "answer_keywords": ["键盘"],
+      "notes": "模糊问题，系统应引导澄清"
+    },
+    {
+      "id": "q_hard_001",
+      "category": "hard_retrieval",
+      "question": "那个 87 键的玩意儿能退吗？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": ["P001"],
+      "ground_truth": "K87 机械键盘支持 7 天无理由退货",
+      "answer_keywords": ["退"],
+      "notes": "口语化 + 指代模糊，检索困难"
+    },
+    {
+      "id": "q_tool_err_001",
+      "category": "tool_exception",
+      "question": "帮我查一下订单状态",
+      "history": [],
+      "expected_route": "tool",
+      "expected_entities": [],
+      "ground_truth": "参数缺失：需要提供订单号",
+      "answer_keywords": ["订单号"],
+      "notes": "Tool 参数缺失场景"
+    },
+    {
+      "id": "q_rag_noans_001",
+      "category": "rag_no_answer",
+      "question": "商城在哪个城市有实体门店？",
+      "history": [],
+      "expected_route": "rag",
+      "expected_entities": [],
+      "ground_truth": "知识库中没有找到足够依据",
+      "answer_keywords": ["门店"],
+      "notes": "RAG 无答案，应明确说明"
+    }
+  ]
+}
