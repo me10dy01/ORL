@@ -9,8 +9,6 @@
 | --- | --- |
 | `baseline` | 向量 top-3（生产链路口径） |
 | `pool_control` | 向量 top-6 取前 3 —— **同一候选池但不重排**，用于把"扩大候选池"与"重排"的贡献分开 |
-| `cross_encoder` | 向量 top-6 → 专业 ONNX cross-encoder → top-3 |
-| `cross_encoder_qwen3` | 同上，换用 Qwen3-Reranker-0.6B（q4） |
 | `llm` | 向量 top-6 → Qwen3 8B LLM-as-Reranker → top-3 |
 
 指标：Hit@1（第一名命中）、Hit@3、MRR@3、无关片段数@3、耗时。
@@ -134,19 +132,11 @@ def _rank_of_expected(results: list[dict], expected_chunk: str) -> int | None:
 def evaluate() -> dict:
     questions = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))["questions"]
 
-    cross_encoder = reranker.OnnxCrossEncoderReranker()
-    cross_encoder_qwen3 = reranker.OnnxCrossEncoderReranker(
-        model_id="onnx-community/Qwen3-Reranker-0.6B-ONNX",
-        onnx_file="onnx/model_q4.onnx",
-        max_length=1024,
-    )
     llm_reranker = reranker.LLMReranker()
 
     methods = {
         "baseline": None,
         "pool_control": "noop",
-        "cross_encoder": cross_encoder,
-        "cross_encoder_qwen3": cross_encoder_qwen3,
         "llm": llm_reranker,
     }
     stats: dict[str, dict] = {

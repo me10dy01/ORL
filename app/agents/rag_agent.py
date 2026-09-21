@@ -4,8 +4,8 @@
 
     START → retrieve → generate → END
 
-可选重排（RAG_RERANK_ENABLED=true）：retrieve 阶段取 rerank_top_k 个候选，
-经 Reranker 重排后保留 rerank_top_n 个送入生成（默认关闭，保持基线行为）。
+检索策略由 ``app.rag.pipeline.retrieve_for_answer`` 统一决定，Agent 不直接操作
+向量库或重排器。
 
 输出：answer + sources（溯源）。
 
@@ -20,10 +20,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.config import get_settings
-from app.rag import generation, reranker, vectorstore
-
-settings = get_settings()
+from app.rag import pipeline
 
 
 class RAGState(TypedDict, total=False):
@@ -36,25 +33,14 @@ class RAGState(TypedDict, total=False):
 
 
 def retrieve_node(state: RAGState) -> dict:
-    """检索：Query → BGE-M3 → Chroma Top-K（可选 Reranker 重排）。"""
-    if settings.rag_rerank_enabled:
-        candidates = vectorstore.retrieve(state["query"], top_k=settings.rerank_top_k)
-        docs = reranker.get_reranker().rerank(
-            state["query"], candidates, settings.rerank_top_n
-        )
-    else:
-        docs = vectorstore.retrieve(state["query"])
-    return {"retrieved_docs": docs}
+    """调用统一在线检索入口，避免 Agent 与 RAG 基础设施耦合。"""
+    return {"retrieved_docs": pipeline.retrieve_for_answer(state["query"])}
 
 
 def generate_node(state: RAGState) -> dict:
-    """生成：基于检索上下文用 Qwen3 生成回答，并附带溯源。"""
-    contexts = state["retrieved_docs"]
-    answer = generation.generate_answer(state["query"], contexts)
-    return {
-        "answer": answer,
-        "sources": [c["metadata"] for c in contexts],
-    }
+    """生成：与 pipeline.compose_answer 共用同一处，避免再写一遍检索后生成。"""
+    composed = pipeline.compose_answer(state["query"], state["retrieved_docs"])
+    return {"answer": composed["answer"], "sources": composed["sources"]}
 
 
 def build_rag_agent():

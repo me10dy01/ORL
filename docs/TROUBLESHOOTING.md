@@ -286,20 +286,19 @@
 | 编号 | 项 | 结论 | 依据（实测） |
 | --- | --- | --- | --- |
 | N1 | mixed 路由并行 | **默认改回串行**（保留 `MIXED_PARALLEL` 开关） | 单卡 GPU 上 Ollama 推理本身串行：并行 180.7/205.8s vs 串行 148.7/199.3s，**无收益** |
-| N2 | 专用 Reranker（`bge-reranker-v2-m3`） | **不引入该模型** | 显存合计 ≈9GB > 空闲 6.8GB；改用 bge-reranker-base int8（ONNX，CPU 推理零显存，~279MB），已设为默认重排器 |
+| N2 | 专用 Reranker（`bge-reranker-v2-m3`） | **不引入该模型** | 显存合计 ≈9GB > 空闲 6.8GB；后续 ONNX 方案在中文语料效果不如 LLM-as-Reranker，现已移除 |
 | N3 | QA 逐句归因默认开启 | **默认关闭** | 每题约 **+100s**；改作离线质检（`evaluate_system --align`） |
 | N4 | 用 Ollama 跑 Qwen3-Reranker-0.6B 做专业重排 | **改走 ONNX** | Ollama 0.34 **无原生 rerank 端点**（`/api/rerank` → 404）；社区 GGUF 以普通因果 LM 加载后打分头不可用（实测输出为标点乱码、`logprobs` 全为 0），拿不到相关度分数 |
 | N5 | Qwen3-Reranker-0.6B（ONNX q4）作默认重排器 | **改用 bge-reranker-base int8** | 同一检索集实测：bge-base **MRR 0.80**、Qwen3-0.6B q4 **MRR 0.70**，且 Qwen3 慢约 **5 倍**（21.4s vs 3.9s / 5 题）。Qwen3-Reranker 的 ONNX 仓只有 q4/quantized 量化版，yes/no logit 精度受损（官方推荐 Q8_0；Ollama 版正是 Q8_0 但无法取分） |
-| N6 | 在线 RAG 默认启用重排 | **初始默认关闭**（后随知识库扩展改为开启） | 初始知识库仅 9 chunk 时重排无增益；知识库扩展至 32 chunks 后已启用 `RAG_RERANK_ENABLED=true` + `RERANKER_IMPL=cross_encoder` |
+| N6 | 在线 RAG 默认启用重排 | **开启 LLM 重排** | 当前配置为 `RAG_RERANK_ENABLED=true` + `RERANKER_IMPL=llm`；仅保留在中文语料中效果更好的实现 |
 
 > 记录负结论比"假装优化过"更有工程价值。
 
 ### 8.1 Reranker 补充说明（模型职责重构后）
 
-- **可插拔接口已落地**：统一 `Reranker` 协议（`rerank(query, documents, top_n)`）+ 三种实现（`OnnxCrossEncoderReranker` / `LLMReranker` / `NoopReranker`）+ 工厂 `get_reranker()`。未来替换专业重排器只需新增实现类，调用方零改动。
-- **三级降级链**：主实现 → LLM 兜底 → 退化为向量召回顺序。补最后一级是因为实测发现 **LLM 兜底自身也会失败**：Qwen3 是思考型模型，思考 token 吃满 `num_predict=512` 时 `with_structured_output` 返回空串（间歇性 `OutputParserException`）。
-- **零显存占用**：ONNX cross-encoder 固定 `CPUExecutionProvider`，不参与 GPU 显存竞争（对比 N2：专用重排器曾因 ≈9GB 显存需求被否决，本方案绕开了该约束）。
-- **依赖零新增**：`onnxruntime` / `tokenizers` / `huggingface_hub` 均为 chromadb 的既有传递依赖，未引入任何新 pip 包。
+- **统一实现**：线上仅保留 `LLMReranker`，由主 Qwen3 模型完成候选排序；旧配置值会显式告警后统一使用 LLM。
+- **结构化稳定性**：重排使用 `get_structured_model(reasoning=False, num_predict=128)`，避免思考 token 耗尽导致空结构化输出。
+- **文本覆盖**：候选片段截断从 300 提高到 800 字符，减少政策条件位于段尾时被漏判的风险。
 
 ---
 
@@ -310,7 +309,7 @@
 - **多 Agent 工作流**：Supervisor（结构化路由）→ RAG / Tool / Mixed → Synthesis → QA → 有限 Retry
 - **企业知识库 RAG**：多格式入库（md / markdown / txt / pdf / docx）→ 切分 → BGE-M3 → Chroma（`file_hash` 去重）
 - **可验证的检索**：baseline vs optimized（LLM Reranker），**MRR 0.9 → 1.0**
-- **可靠的工具调用**：`Agent → Tool → Service → Repository → MySQL`（6 个业务工具，禁止 LLM 生成 SQL）
+- **可靠的工具调用**：`Agent → Tool → queries → Repository → MySQL`（6 个业务工具，禁止 LLM 生成 SQL）
 - **多轮对话**：Query Rewrite 指代消解 + MySQL 会话记忆（重命名 / 单删 / **全选批量删除**）
 - **质检与溯源**：QA/Validator + 有限重试；citation 可追踪 chunk，前端按文档分组展示
 - **流式输出**：SSE 只暴露用户可见事件（`status` / `tool` / `token` / `done`）

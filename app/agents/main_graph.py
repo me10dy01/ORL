@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypedDict
 
@@ -95,6 +96,9 @@ def cache_gate_node(state: MainState) -> dict:
         return {"cache_hit": False, "cache_payload": {}}
     with profiling.stage("cache_lookup"):
         payload = cache.get(state["rewritten_query"] or state["user_query"])
+    # 只复用知识库回答。订单/库存会变，tool 与 mixed 的旧缓存视为未命中。
+    if payload is not None and payload.get("route") != "rag":
+        payload = None
     return {"cache_hit": payload is not None, "cache_payload": payload or {}}
 
 
@@ -420,6 +424,8 @@ def cache_store_node(state: MainState) -> dict:
     """
     if not settings.answer_cache_enabled:
         return {}
+    if state.get("route") != "rag":
+        return {}
     if not (state.get("qa_result") or {}).get("passed"):
         return {}
     answer = state.get("final_answer") or ""
@@ -549,39 +555,108 @@ def _initial_state(
     }
 
 
-def run_main_graph(
+_NODE_STATUS = {
+    "rewrite": "正在理解上下文",
+    "supervisor": "正在分析问题",
+    "replan": "正在重新规划任务",
+    "rag": "正在检索知识库",
+    "tool": "正在查询业务数据",
+    "synthesis": "正在生成回答",
+    "qa": "正在验证回答",
+}
+
+
+def _result_from_state(state: dict, profile: dict) -> dict:
+    """从主图最终状态组装调用方需要的结果。状态合并只发生在 iter_chat_events。"""
+    return {
+        "route": state.get("route", ""),
+        "reason": state.get("reason", ""),
+        "tasks": state.get("tasks", []),
+        "route_decision": state.get("route_decision", ""),
+        "rewritten_query": state.get("rewritten_query", ""),
+        "final_answer": state.get("final_answer", ""),
+        "citations": state.get("citations", []),
+        "qa_passed": (state.get("qa_result") or {}).get("passed", False),
+        "retry_count": state.get("retry_count", 0),
+        "degraded": state.get("degraded", False),
+        "tool_calls": (state.get("tool_result") or {}).get("tool_calls", []),
+        "qa_result": state.get("qa_result", {}),
+        "cache_hit": state.get("cache_hit", False),
+        "profile": profile,
+    }
+
+
+def iter_chat_events(
     user_query: str,
     conversation_id: str = "default",
     sentence_alignment: bool | None = None,
-) -> dict:
-    """独立运行主图，返回路由、改写查询、质检结果与最终回答。
+) -> Iterator[dict]:
+    """唯一的主图执行入口。产出用户可见事件，done 上附带完整 result。
 
-    sentence_alignment 为 None 时取配置 settings.qa_sentence_alignment；
-    显式传 True/False 可覆盖（评估时用于强制开启逐句归因）。
+    同步调用方读取 done["result"]。流式调用方丢掉 result，只转发可见字段。
     """
     align = (
         settings.qa_sentence_alignment
         if sentence_alignment is None
         else sentence_alignment
     )
+    initial = _initial_state(user_query, conversation_id, align_citations=align)
+    state: dict = dict(initial)
+
     with profiling.profiler_scope() as prof:
-        result = main_graph.invoke(
-            _initial_state(user_query, conversation_id, align_citations=align)
-        )
-        profile = prof.snapshot()
-    return {
-        "route": result["route"],
-        "reason": result["reason"],
-        "tasks": result.get("tasks", []),
-        "route_decision": result.get("route_decision", ""),
-        "rewritten_query": result.get("rewritten_query", ""),
-        "final_answer": result["final_answer"],
-        "citations": result.get("citations", []),
-        "qa_passed": result.get("qa_result", {}).get("passed", False),
-        "retry_count": result.get("retry_count", 0),
-        "degraded": result.get("degraded", False),
-        "tool_calls": (result.get("tool_result") or {}).get("tool_calls", []),
-        "qa_result": result.get("qa_result", {}),
-        "cache_hit": result.get("cache_hit", False),
-        "profile": profile,
-    }
+        for namespace, mode, chunk in main_graph.stream(
+            initial,
+            stream_mode=["updates", "messages", "custom"],
+            subgraphs=True,
+        ):
+            if namespace != ():
+                if mode == "custom":
+                    yield chunk
+                continue
+
+            if mode == "updates":
+                for node, update in chunk.items():
+                    if update:
+                        state.update(update)
+                    msg = _NODE_STATUS.get(node)
+                    if msg:
+                        yield {"type": "status", "message": msg}
+            elif mode == "messages":
+                msg, meta = chunk
+                if meta.get("langgraph_node") == "synthesis":
+                    content = getattr(msg, "content", "") or ""
+                    if content:
+                        yield {"type": "token", "content": content}
+            elif mode == "custom":
+                yield chunk
+
+        result = _result_from_state(state, prof.snapshot())
+        yield {
+            "type": "done",
+            "final_answer": result["final_answer"],
+            "citations": result["citations"],
+            "qa_passed": result["qa_passed"],
+            "retry_count": result["retry_count"],
+            "degraded": result["degraded"],
+            "profile": result["profile"],
+            "result": result,
+        }
+
+
+def run_main_graph(
+    user_query: str,
+    conversation_id: str = "default",
+    sentence_alignment: bool | None = None,
+) -> dict:
+    """把同一次事件流收完，返回 done 里的结果。不再单独 invoke 主图。"""
+    result: dict | None = None
+    for event in iter_chat_events(
+        user_query, conversation_id, sentence_alignment=sentence_alignment
+    ):
+        if event.get("type") == "done":
+            payload = event.get("result")
+            if isinstance(payload, dict):
+                result = payload
+    if result is None:
+        raise RuntimeError("主图未返回结果")
+    return result

@@ -71,6 +71,6 @@ def test_retrieval_sources_have_traceable_metadata(rag_index: dict) -> None:
 
 
 def test_answer_returns_text_and_sources(rag_index: dict) -> None:
-    result = answer("K87 键盘支持退货吗？", top_k=4)
+    result = answer("K87 键盘支持退货吗？")
     assert isinstance(result["answer"], str) and result["answer"]
     assert result["sources"]

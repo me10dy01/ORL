@@ -12,6 +12,10 @@ class ValidationError(AppError):
     """参数缺失或非法。"""
 
 
+class PayloadTooLargeError(AppError):
+    """上传内容超过大小限制。"""
+
+
 class NotFoundError(AppError):
     """数据不存在。"""
 

@@ -1,13 +1,9 @@
-"""Streaming（Phase 12 / 模型职责重构）。
+"""把主图事件流呈现为用户可见的 SSE 事件。
 
-把 LangGraph 内部事件映射为用户可见状态，内部事件与用户可见事件分离
-（AGENTS.md 第 19 条）。
-
-事件协议：
-    {"type": "status", "message": "正在分析问题"}
-    {"type": "tool", "name": "get_order", "args": {...}}
-    {"type": "token", "content": "..."}      # 最终回答的 token 流
-    {"type": "done", "final_answer": ..., "citations": [...], ...}
+图的执行和状态合并只在 main_graph.iter_chat_events。这里负责：
+- 工作线程桥接，避免 ASGI 逐次迭代拆掉 contextvars
+- 没有真实 token 时，把最终答案切块打出
+- 去掉 done 上的内部 result，不把路由细节发给浏览器
 """
 
 from __future__ import annotations
@@ -17,21 +13,8 @@ import threading
 import time
 from collections.abc import Iterator
 
-from app import profiling
-from app.agents.main_graph import _initial_state, main_graph
+from app.agents.main_graph import iter_chat_events
 
-# 节点名 → 用户可见状态（仅暴露有意义的状态，不暴露内部节点）
-NODE_STATUS = {
-    "rewrite": "正在理解上下文",
-    "supervisor": "正在分析问题",
-    "replan": "正在重新规划任务",
-    "rag": "正在检索知识库",
-    "tool": "正在查询业务数据",
-    "synthesis": "正在生成回答",
-    "qa": "正在验证回答",
-}
-
-# 工作线程 → 主线程的队列消息标记
 _EVENT = "event"
 _ERROR = "error"
 _END = "end"
@@ -45,57 +28,23 @@ def _smooth_stream(text: str, chunk_size: int = 2, delay: float = 0.025) -> Iter
             time.sleep(delay)
 
 
-def _stream_events(user_query: str, conversation_id: str) -> Iterator[dict]:
-    """主图流式执行（在单一上下文中跑完，保证 profiling 埋点完整）。"""
-    initial = _initial_state(user_query, conversation_id)
-    state: dict = dict(initial)
-    any_token = False
-
-    with profiling.profiler_scope() as prof:
-        for namespace, mode, chunk in main_graph.stream(
-            initial,
-            stream_mode=["updates", "messages", "custom"],
-            subgraphs=True,
-        ):
-            # 子图内部事件：只透出 custom（工具）事件，其余不暴露给用户
-            if namespace != ():
-                if mode == "custom":
-                    yield chunk
-                continue
-
-            if mode == "updates":
-                for node, update in chunk.items():
-                    if update:
-                        state.update(update)
-                    msg = NODE_STATUS.get(node)
-                    if msg:
-                        yield {"type": "status", "message": msg}
-            elif mode == "messages":
-                msg, meta = chunk
-                if meta.get("langgraph_node") == "synthesis":
-                    content = getattr(msg, "content", "") or ""
-                    if content:
-                        any_token = True
-                        yield {"type": "token", "content": content}
-            elif mode == "custom":
-                yield chunk
-
-        final_answer = state.get("final_answer", "")
-        # synthesis 被跳过时无真实 token 事件，将最终答案平滑流式输出，避免整段答案突然闪现
-        if not any_token and final_answer:
-            for piece in _smooth_stream(final_answer):
-                yield {"type": "token", "content": piece}
-
-        # 注意：total_ms 含客户端消费 SSE 的间隔（背压），略高于服务端纯计算耗时
-        yield {
-            "type": "done",
-            "final_answer": final_answer,
-            "citations": state.get("citations", []),
-            "qa_passed": (state.get("qa_result") or {}).get("passed", False),
-            "retry_count": state.get("retry_count", 0),
-            "degraded": state.get("degraded", False),
-            "profile": prof.snapshot(),
-        }
+def _present(events: Iterator[dict]) -> Iterator[dict]:
+    """补上展示用的打字块，并剥掉内部结果。"""
+    saw_token = False
+    for event in events:
+        kind = event.get("type")
+        if kind == "token":
+            saw_token = True
+            yield event
+            continue
+        if kind == "done":
+            answer = event.get("final_answer") or ""
+            if not saw_token and answer:
+                for piece in _smooth_stream(answer):
+                    yield {"type": "token", "content": piece}
+            yield {key: value for key, value in event.items() if key != "result"}
+            continue
+        yield event
 
 
 def stream_chat(user_query: str, conversation_id: str = "default") -> Iterator[dict]:
@@ -112,7 +61,7 @@ def stream_chat(user_query: str, conversation_id: str = "default") -> Iterator[d
 
     def worker() -> None:
         try:
-            for event in _stream_events(user_query, conversation_id):
+            for event in _present(iter_chat_events(user_query, conversation_id)):
                 if stop.is_set():
                     break
                 messages.put((_EVENT, event))

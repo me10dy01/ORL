@@ -55,23 +55,10 @@ class Settings(BaseSettings):
     rerank_top_k: int = 6
     rerank_top_n: int = 3
 
-    # Reranker 实现：cross_encoder = 专业 ONNX cross-encoder（CPU 推理零显存，
-    # ~279MB，推荐）；llm = Qwen3 8B LLM-as-Reranker（复用已驻留显存但占用推理时间）；
-    # none = 不重排
-    reranker_impl: Literal["llm", "cross_encoder", "none"] = "cross_encoder"
-    # 专业 Reranker 模型（ONNX cross-encoder，CPU 推理不占显存，约 279MB）。
-    # 实测（本项目知识库 5 题检索集）：bge-base 与 Qwen3-0.6B q4 均为 MRR 0.80，
-    # 低于 LLM 重排器的 1.00；Qwen3 的 ONNX 仓只有 q4/quantized 量化版。
-    reranker_model: str = "Xenova/bge-reranker-base"
-    reranker_onnx_file: str = "onnx/model_int8.onnx"
-    reranker_max_length: int = 512
-    # 打分约定：auto = 按 ONNX 输出形状自动识别；sigmoid（bge 系列）/ yes_no（Qwen3 系列）
-    reranker_scoring: Literal["auto", "sigmoid", "yes_no"] = "auto"
-    # Qwen3-Reranker 判定模板中的 Instruct
-    reranker_instruct: str = (
-        "Given a web search query, retrieve relevant passages that answer the query."
-    )
-    # 在线 RAG 链路是否启用重排（开启后 top_k→rerank→top_n）
+    # 统一使用主 LLM 做候选重排：本项目中文知识库实测优于 ONNX cross-encoder，
+    # 同时避免维护额外的 reranker 模型与运行时依赖。
+    reranker_impl: str = "llm"
+    # 在线 RAG 始终启用 LLM 重排（top_k→top_n）。
     rag_rerank_enabled: bool = True
 
     # 路由策略（Supervisor 模型职责重构）：

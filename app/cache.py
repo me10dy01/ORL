@@ -5,6 +5,7 @@
 失效策略：
 - 换模型 → 键含模型名，天然失效
 - 知识库变化（上传/删除文档）→ 由 `management` 调用 `clear()` 主动清空
+- 订单/库存类回答不写入本缓存（见 main_graph.cache_store_node）
 """
 
 from __future__ import annotations

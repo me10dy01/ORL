@@ -67,7 +67,12 @@ def test_cache_store_writes_passed_qa(monkeypatch):
     called: list = []
     monkeypatch.setattr(mg.cache, "put", lambda *a, **k: called.append(a))
     mg.cache_store_node(
-        {"user_query": "q", "final_answer": "答案", "qa_result": {"passed": True}}
+        {
+            "user_query": "q",
+            "route": "rag",
+            "final_answer": "答案",
+            "qa_result": {"passed": True},
+        }
     )
     assert len(called) == 1
 
@@ -85,6 +90,55 @@ def test_cache_store_skips_degraded(monkeypatch):
         }
     )
     assert called == []
+
+
+def test_cache_store_skips_business_routes(monkeypatch):
+    """订单和混合问答不进精确缓存，避免库存或订单状态变了仍返回旧答案。"""
+    called: list = []
+    monkeypatch.setattr(mg.cache, "put", lambda *a, **k: called.append(a))
+    for route in ("tool", "mixed"):
+        mg.cache_store_node(
+            {
+                "user_query": "q",
+                "route": route,
+                "final_answer": "答案",
+                "qa_result": {"passed": True},
+            }
+        )
+    assert called == []
+
+
+def test_run_main_graph_reads_done_result(monkeypatch):
+    """同步入口只消费同一次事件流，不再单独 invoke。"""
+    monkeypatch.setattr(
+        mg,
+        "iter_chat_events",
+        lambda *args, **kwargs: iter(
+            [
+                {"type": "status", "message": "正在分析问题"},
+                {
+                    "type": "done",
+                    "final_answer": "答案",
+                    "result": {"route": "rag", "final_answer": "答案"},
+                },
+            ]
+        ),
+    )
+    assert run_main_graph("问题") == {"route": "rag", "final_answer": "答案"}
+
+
+def test_cache_gate_ignores_non_rag_payload(monkeypatch):
+    monkeypatch.setattr(
+        mg.cache, "get", lambda *args, **kwargs: {"route": "tool", "final_answer": "旧订单"}
+    )
+    got = mg.cache_gate_node({"rewritten_query": "订单状态", "user_query": "订单状态"})
+    assert got["cache_hit"] is False
+
+    monkeypatch.setattr(
+        mg.cache, "get", lambda *args, **kwargs: {"route": "rag", "final_answer": "退货政策"}
+    )
+    got = mg.cache_gate_node({"rewritten_query": "退货政策", "user_query": "退货政策"})
+    assert got["cache_hit"] is True
 
 
 # ---- replan 节点 ----

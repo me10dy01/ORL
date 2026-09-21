@@ -1,6 +1,6 @@
 """业务工具（LangChain Tool）。
 
-把 Phase 03 的 Tool（Tool → Service → Repository → MySQL）暴露给 LLM 做
+把已校验的业务工具（Tool → queries → Repository → MySQL）暴露给 LLM 做
 Tool Calling。工具参数必须校验；错误以结构化 JSON 返回，不静默吞异常。
 """
 

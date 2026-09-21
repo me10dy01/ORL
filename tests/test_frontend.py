@@ -56,6 +56,16 @@ def test_app_js_covers_conversation_management() -> None:
     assert "toast" in body  # 非阻塞提示（替代 alert）
 
 
+def test_session_restore_and_suggestions_handle_storage_and_races() -> None:
+    """会话恢复降级安全，旧会话的推荐请求不能覆盖当前会话。"""
+    body = client.get("/static/app.js").text
+    assert "function getSessionStorage" in body
+    assert "CONVERSATION_STORAGE_KEY" in body
+    assert "suggestionRequestId" in body
+    assert "cid !== conversationId" in body
+    assert "renderSuggestions([]);" in body
+
+
 def test_faq_panel_above_composer_focus_visible() -> None:
     """常见问题：位于输入框上方，默认隐藏，聚焦输入框时展示，点击填入输入框。"""
     html = client.get("/").text

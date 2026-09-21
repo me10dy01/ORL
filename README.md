@@ -18,17 +18,16 @@
 | [`docs/METRICS.md`](docs/METRICS.md) | 指标定义与实测结果、Reranker 选型实测 |
 | [`docs/INTERVIEW.md`](docs/INTERVIEW.md) | 项目亮点、设计决策、常见问答、扩展方向 |
 | [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | 26 个真实问题的现象/根因/解决/状态 + 负结论 |
-| [`项目演示与讲解.docx`](项目演示与讲解.docx) | 20 分钟项目演示与讲解文档 |
 
 ## 功能特性
 
 - **Multi-Agent 编排**：Supervisor（结构化路由 `{route, reason, tasks}`）→ RAG / Tool / Mixed → Synthesis → QA → 有限 Retry（`MAX_RETRY=2`）
 - **Supervisor 分层路由**（模型职责重构）：**规则前置判定（0 次 LLM，毫秒级）** → 轻量提示词 LLM Router → 完整提示词复判 → 保守兜底；每级输出都过 schema + 任务完整性 + 一致性冲突校验（如输入含订单号却判 rag 则升级复判）。评测集 20 题中规则覆盖 17 题且**零误判**
-- **QA 闭环可回退重规划**：QA 不通过 → 第 1 次带质检反馈重新合成 → 第 2 次**回 Supervisor 重新规划任务**重新取证 → 重试耗尽返回**安全降级回答**（不输出未过检草稿）；**仅 QA 通过的回答才写缓存**
+- **QA 闭环可回退重规划**：QA 不通过 → 第 1 次带质检反馈重新合成 → 第 2 次**回 Supervisor 重新规划任务**重新取证 → 重试耗尽返回**安全降级回答**（不输出未过检草稿）。缓存只保存 **QA 通过的知识库（rag）回答**；订单、库存等 `tool` / `mixed` 回答不进缓存
 - **企业知识库 RAG**：多格式入库（`md / markdown / txt / pdf / docx`）→ 切分 → BGE-M3 → Chroma（持久化 + `file_hash` 去重）
-- **可插拔 Reranker**：统一 `Reranker` 协议 + 三种实现（专业 ONNX cross-encoder / Qwen3 8B LLM-as-Reranker / 不重排），主实现失败自动降级、兜底再失败则退化为召回顺序，**RAG 永不因重排失败而中断**；专业重排器**CPU 推理、零显存占用**
+- **LLM 重排**：在线只用 Qwen3 8B 对向量候选排序（`LLMReranker`）。失败时保留召回顺序，RAG 不中断。曾比较过的 ONNX cross-encoder 已从代码和依赖里移除，选型记录见 [`docs/METRICS.md`](docs/METRICS.md)
 - **可验证的检索**：baseline 与 optimized（Reranker）并存，测试集量化对比（**MRR 0.9 → 1.0**）
-- **可靠的工具调用**：LLM Tool Calling，链路固定为 `Agent → Tool → Service → Repository → MySQL`，禁止 LLM 生成 SQL
+- **可靠的工具调用**：LLM Tool Calling，链路固定为 `Agent → Tool → queries → Repository → MySQL`，禁止 LLM 生成 SQL
 - **多轮对话**：Query Rewrite 指代消解（"那运费谁承担？" → "星辰数码商城 K87 退货时的运费由谁承担？"）+ MySQL 会话记忆；会话列表按最近时间排序，支持**重命名 / 删除**
 - **质检与溯源**：QA/Validator 结构化校验 + 有限重试；citation 可追踪到 `document_id / chunk_id / file_name`（前端按文档分组展示）
 - **低延迟优化**：QA **规则先行**（结构可判定则不调 LLM）＋ **回答缓存**（相同问题 0 秒返回）
@@ -116,9 +115,10 @@ flowchart TD
 app/
   main.py             FastAPI 入口（/health、/、/admin、/api、/static）
   config.py           集中配置（env 注入，含行为开关）
+  application/        应用服务层（聊天、会话、知识库、推荐用例编排）
   db.py               SQLAlchemy 模型与连接（含 messages 表）
   repositories.py     数据访问层
-  services.py         业务逻辑层
+  queries.py          业务数据查询（Tool 校验之后、Repository 之前）
   tools.py            业务工具（参数校验 + 错误兜底）
   memory.py           会话记忆（跨请求）
   streaming.py        用户可见事件流（SSE）
@@ -137,7 +137,7 @@ app/
     loaders.py        多格式文本提取（md/txt/pdf/docx）
     documents.py      加载 / 切分（metadata + 去重 hash）
     vectorstore.py    BGE-M3 + Chroma（入库 / 检索 / 去重）
-    reranker.py       可插拔 Reranker（cross_encoder / llm / none + 失败降级链）
+    reranker.py       LLM-as-Reranker（Qwen3 候选片段排序）
     generation.py     Qwen3 生成
     pipeline.py       baseline / optimized 流水线
     evaluation.py     检索评估（Hit@N / MRR）
@@ -170,10 +170,8 @@ tests/                130 个测试（83 快速 + 47 slow）
 | `RAG_TOP_K` | `4` | RAG 检索条数 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `50` | 切分参数 |
 | `RERANK_TOP_K` / `RERANK_TOP_N` | `6` / `3` | Rerank 前候选数与最终条数 |
-| `RERANKER_IMPL` | `cross_encoder` | 重排器实现：`cross_encoder`（专业 ONNX cross-encoder，**CPU 推理零显存**，推荐）/ `llm`（Qwen3 8B LLM-as-Reranker，复用已驻留显存但占用推理时间）/ `none` |
-| `RERANKER_MODEL` / `RERANKER_ONNX_FILE` | `Xenova/bge-reranker-base` / `onnx/model_int8.onnx` | cross_encoder 实现使用的重排模型（约 279MB，首次使用自动下载） |
-| `RERANKER_SCORING` | `auto` | 打分约定：按 ONNX 输出形状自动识别（`sigmoid` / `yes_no`） |
-| `RAG_RERANK_ENABLED` | `true` | 在线 RAG 是否启用重排（知识库 >50 chunks 时建议开启） |
+| `RERANKER_IMPL` | `llm` | 仅保留兼容字段。线上固定 LLM 重排，其它值会被忽略 |
+| `RAG_RERANK_ENABLED` | `true` | 在线 RAG 启用：向量 Top-K → LLM 排序 → Top-N |
 | `ROUTER_MODE` | `auto` | Supervisor 路由策略：`auto`（规则优先，0 次 LLM）/ `rules_only` / `llm`（旧行为） |
 | `ROUTER_LLM_MODEL` | 空 | Router 专用模型，留空复用 `LLM_MODEL`；可指向更小模型进一步降延迟 |
 | `MIXED_PARALLEL` | `false` | mixed 路由是否并行（单卡实测无收益，故默认串行） |

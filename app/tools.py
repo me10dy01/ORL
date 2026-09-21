@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app import services
+from app import queries
 from app.exceptions import AppError, DatabaseError, NotFoundError, ValidationError
 
 PRODUCT_ID_RE = re.compile(r"^P\d{3}$")
@@ -63,7 +63,7 @@ def get_product_info(product_id: str) -> ToolResult:
 
     def _fn() -> dict:
         _validate(product_id, PRODUCT_ID_RE, "product_id")
-        return services.get_product_info(product_id)
+        return queries.get_product_info(product_id)
 
     return _run(_fn)
 
@@ -73,7 +73,7 @@ def get_inventory(product_id: str) -> ToolResult:
 
     def _fn() -> list[dict]:
         _validate(product_id, PRODUCT_ID_RE, "product_id")
-        return services.get_inventory(product_id)
+        return queries.get_inventory(product_id)
 
     return _run(_fn)
 
@@ -83,7 +83,7 @@ def get_order(order_id: str) -> ToolResult:
 
     def _fn() -> dict:
         _validate(order_id, ORDER_ID_RE, "order_id")
-        return services.get_order(order_id)
+        return queries.get_order(order_id)
 
     return _run(_fn)
 
@@ -93,7 +93,7 @@ def get_order_items(order_id: str) -> ToolResult:
 
     def _fn() -> list[dict]:
         _validate(order_id, ORDER_ID_RE, "order_id")
-        return services.get_order_items(order_id)
+        return queries.get_order_items(order_id)
 
     return _run(_fn)
 
@@ -103,7 +103,7 @@ def get_user_orders(user_id: str) -> ToolResult:
 
     def _fn() -> list[dict]:
         _validate(user_id, USER_ID_RE, "user_id")
-        return services.get_user_orders(user_id)
+        return queries.get_user_orders(user_id)
 
     return _run(_fn)
 
@@ -114,6 +114,6 @@ def search_products(keyword: str) -> ToolResult:
     def _fn() -> list[dict]:
         if not keyword or not isinstance(keyword, str):
             raise ValidationError("参数缺失: keyword 不能为空")
-        return services.search_products(keyword.strip())
+        return queries.search_products(keyword.strip())
 
     return _run(_fn)

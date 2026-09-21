@@ -14,7 +14,7 @@
 1. **Agent 边界清晰**：仅 4 个核心 Agent（Supervisor / RAG / Tool / QA），职责单一，拒绝为“高级感”堆 Agent。
 2. **可解释的路由**：Supervisor 输出结构化 `{route, reason, tasks}`，支持 rag / tool / mixed；
 规则优先分层决策（`rules` / `llm_short` / `llm_full` / `fallback`）+ 一致性冲突校验，路径可追溯。
-3. **可靠的数据访问**：`Agent → Tool → Service → Repository → MySQL`，禁止 LLM 生成 SQL。
+3. **可靠的数据访问**：`Agent → Tool → queries → Repository → MySQL`，禁止 LLM 生成 SQL。
 4. **多格式知识入库**：md / markdown / txt / pdf / docx → 切分 → BGE-M3 → Chroma（`file_hash` 去重）。
 5. **可验证的 RAG**：baseline 与 optimized（Rerank）并存，用测试集量化对比（MRR 0.9 → 1.0）。
 6. **有限的可靠性闭环**：QA 质检 + 有限 Retry（MAX_RETRY=2）+ 可选逐句归因。
@@ -34,7 +34,7 @@
 | 子图契约 `query → answer(+sources/tool_calls)` | 主图不关心内部实现，可复用、可测试 |
 | 知识文档只进 Chroma；MySQL 只存业务数据 + 对话历史 | 数据形态不同 → 检索方式不同 |
 | Memory 存 MySQL 而非塞进 State | Workflow State 与跨请求 Memory 必须分离 |
-| Rerank 用 cross-encoder（CPU 推理） | 专业 ONNX 模型 ~279MB，CPU 推理零显存，不与 LLM 争抢 GPU |
+| Rerank 只用主 LLM | 中文知识库上优于已移除的 ONNX cross-encoder；失败则退回召回顺序 |
 | 逐句归因默认关闭 | 准确但每题 +约 100s，只适合离线/抽样 |
 | mixed 默认串行 | 单卡 GPU 推理串行，实测并行无收益 |
 | 前端无构建步骤（原生 JS + vendor） | 满足“无 Docker、无 Node、全进程本地运行” |
@@ -162,7 +162,7 @@ A：分层解耦 + pytest 标记：默认跑**快速测试**（70 个，约 1s�
 1. **QA 逐句对齐的落地方式**：已实现但延迟高 → 建议**离线批量**跑或仅抽样。
 2. **异步化与并发**：`async def` 端点 + `astream`、异步 DB、阻塞调用丢线程池。
 3. **Memory 摘要（历史压缩）**：`conversation_summaries` 表 + 超阈值压缩，注入「摘要 + 最近 N 条」。
-4. **专用 Reranker 已落地**：bge-reranker-base int8（ONNX，CPU 推理，~279MB，零显存），已设为默认。
+4. **重排只保留 LLM**：ONNX cross-encoder 已从运行时代码移除。线上唯一实现是 `LLMReranker`（Qwen3 8B），失败则退回向量顺序。选型过程见 `docs/METRICS.md`，不要把已删除的模型加回默认路径。
 5. **前端组件化框架**：拆组件 + 响应式状态（代价：引入 Node/构建，与“无构建”取舍冲突）。
 
 ### 6.3 硬件约束：加 Reranker 会爆显存吗（实测）
@@ -181,9 +181,8 @@ A：分层解耦 + pytest 标记：默认跑**快速测试**（70 个，约 1s�
 
 **建议**：
 
-- 已采用 **cross-encoder reranker**（bge-reranker-base int8 ONNX，CPU 推理，~279MB，零显存占用）
-- LLM-as-Reranker 保留为备选方案（复用 Qwen3，但占用推理时间 ~1s/query）
-- 若确需专用 reranker → **跑 CPU**（只对 6 个候选打分，约 50–300ms）
+- 线上重排是 **LLM-as-Reranker**（复用 Qwen3）。ONNX cross-encoder 曾测过，效果不如该实现，且已从代码中删除
+- 若再引入专用 reranker，应跑 CPU，并且先用同一检索集对比 MRR，不能直接换默认实现
 - 配置 `OLLAMA_MAX_LOADED_MODELS=1`；用 `nvidia-smi` 与 `curl http://127.0.0.1:11434/api/ps` 观察 `size_vram`
 - ⚠️ 若溢出到内存：5.2+1.2+1~2+Python/Chroma/OS(4~6) ≈ 12~15GB，**16GB 易触发 swap**
 

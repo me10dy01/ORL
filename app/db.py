@@ -1,6 +1,6 @@
 """MySQL 连接与 SQLAlchemy ORM 模型。
 
-数据访问链路：Tool → Service → Repository → SQLAlchemy → MySQL
+数据访问链路：Tool → queries → Repository → SQLAlchemy → MySQL
 本模块仅负责连接与模型定义，不含业务逻辑。
 """
 

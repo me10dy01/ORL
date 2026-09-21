@@ -1,7 +1,7 @@
 """RAG Pipeline。
 
-Baseline（Phase 04）：Document → Chunk → BGE-M3 → Chroma → Retrieval → Qwen3
-Optimized（Phase 10）：Vector Top-K → Reranker → Top-N → Qwen3
+在线问答只走 retrieve_for_answer → compose_answer。
+retrieve(..., rerank=True/False) 给检索评测对比基线和重排，不作为第二条在线入口。
 """
 
 from __future__ import annotations
@@ -24,39 +24,51 @@ def build_index() -> dict:
     }
 
 
-def retrieve(query: str, top_k: int | None = None) -> list[dict]:
-    """Baseline 检索：向量 Top-K。"""
-    return vectorstore.retrieve(query, top_k)
-
-
-def retrieve_baseline(query: str, top_n: int | None = None) -> list[dict]:
-    """Baseline 检索：直接向量 Top-N。"""
-    return vectorstore.retrieve(query, top_n or settings.rag_top_k)
-
-
-def retrieve_optimized(
+def retrieve(
     query: str,
     top_k: int | None = None,
+    *,
     top_n: int | None = None,
+    rerank: bool = False,
     reranker_impl: str | None = None,
 ) -> list[dict]:
-    """Optimized 检索：向量 Top-K → Reranker → Top-N。
+    """检索候选片段。
 
-    reranker_impl 为空时使用配置（`RERANKER_IMPL`）；显式传入可用于
-    对比不同重排实现（如 "llm" 与 "cross_encoder"）。
+    rerank=False：向量 Top-K，评测基线，也是关闭重排时的召回。
+    rerank=True：向量 Top-K 再重排到 Top-N。reranker_impl 只为旧评测签名保留。
     """
-    k = top_k or settings.rerank_top_k
-    n = top_n or settings.rerank_top_n
+    k = top_k
+    if k is None:
+        k = settings.rerank_top_k if rerank else settings.rag_top_k
     candidates = vectorstore.retrieve(query, k)
+    if not rerank:
+        return candidates
+    n = top_n if top_n is not None else settings.rerank_top_n
     return reranker.get_reranker(reranker_impl).rerank(query, candidates, n)
 
 
-def answer(query: str, top_k: int | None = None) -> dict:
-    """端到端（baseline）：检索 → 生成 → 回答 + 溯源。"""
-    contexts = retrieve(query, top_k)
+def retrieve_for_answer(query: str) -> list[dict]:
+    """在线问答唯一检索入口。"""
+    if settings.rag_rerank_enabled:
+        return retrieve(
+            query,
+            top_k=settings.rerank_top_k,
+            top_n=settings.rerank_top_n,
+            rerank=True,
+        )
+    return retrieve(query, top_k=settings.rag_top_k)
+
+
+def compose_answer(query: str, contexts: list[dict]) -> dict:
+    """把已检索的上下文生成回答。在线 RAG 与 pipeline.answer 共用这一处。"""
     text = generation.generate_answer(query, contexts)
     return {
         "query": query,
         "answer": text,
         "sources": [c["metadata"] for c in contexts],
     }
+
+
+def answer(query: str) -> dict:
+    """离线/脚本入口：检索 → 生成。在线图走 RAG Agent，不从这里再写一遍生成。"""
+    return compose_answer(query, retrieve_for_answer(query))

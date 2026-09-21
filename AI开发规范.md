@@ -484,13 +484,12 @@ Top-N = 3
 默认配置：
 
 - `RAG_RERANK_ENABLED=true`（默认启用重排）
-- `RERANKER_IMPL=cross_encoder`（默认使用专业 ONNX cross-encoder，CPU 推理，零显存占用）
-- cross-encoder 默认模型：`bge-reranker-base` int8（约 279MB）
-- 支持 `sigmoid` 和 `yes_no` 两种打分约定，按 ONNX 输出形状自动识别
+- 在线唯一实现是 `LLMReranker`（主 LLM，`reasoning=False`）。失败时保留向量召回顺序
+- `RERANKER_IMPL` 只作兼容字段；非 `llm` 会被忽略，不得再接回 ONNX 或空重排实现
 
-可插拔接口：
+协议：
 
-统一 `Reranker` 协议（`rerank(query, documents, top_n)`）+ 三种实现（`OnnxCrossEncoderReranker` / `LLMReranker` / `NoopReranker`）+ 工厂 `get_reranker()`。
+`Reranker.rerank(query, documents, top_n)`，工厂 `get_reranker()` 始终返回 `LLMReranker`。
 
 ---
 

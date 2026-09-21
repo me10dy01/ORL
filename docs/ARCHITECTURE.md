@@ -8,7 +8,10 @@
 前端 (HTML/JS + Markdown 流式渲染)
    │  HTTP / SSE
    ▼
-API 层 (FastAPI)              —— 只做协议转换，不含业务逻辑
+API 层 (FastAPI)              —— 只做 HTTP / SSE 协议转换
+   │
+   ▼
+应用服务层 (Chat / Conversation / Knowledge / Suggestion)
    │
    ▼
 Workflow 层 (LangGraph Main Graph)
@@ -20,13 +23,13 @@ Agent 层 (Supervisor / RAG / Tool / QA)
 能力层 (RAG Pipeline / Business Tools / Memory)
    │
    ▼
-数据层 (Chroma 向量库 / MySQL) —— Tool → Service → Repository → MySQL
+数据层 (Chroma 向量库 / MySQL) —— Tool → queries → Repository → MySQL
 ```
 
 ### 核心原则
 
-- API 层不含业务逻辑：`API → Service → Graph/RAG/Tool`
-- 业务数据访问必须走 `Agent → Tool → Service → Repository → MySQL`，禁止 `Agent → SQL → MySQL`
+- API 层不含业务逻辑：`API → application → Graph / RAG / Tool`
+- 业务数据访问必须走 `Agent → Tool → queries → Repository → MySQL`，禁止 `Agent → SQL → MySQL`
 - Workflow State（单次请求）与 Conversation Memory（跨请求）严格分离
 - 知识文档只进 Chroma；MySQL 只存业务数据与对话历史
 
@@ -54,7 +57,7 @@ flowchart TD
     RETRY -->|"resynthesize"| SYN
     RETRY -->|"replan"| SUP
     QA -->|"重试耗尽"| DEG["degrade：安全降级回答"]
-    FIN --> CS["cache_store（仅 QA 通过才写）"]
+    FIN --> CS["cache_store（仅 rag 且 QA 通过才写）"]
     CS --> MEM["Save Memory"]
     DEG --> CS
     CF --> MEM
@@ -105,7 +108,7 @@ START → init → agent ⇄ execute_tools → finalize → END
 LLM 通过 Tool Calling 选择业务工具并生成参数；工具链路：
 
 ```text
-Agent → Tool → Service → Repository → SQLAlchemy → MySQL
+Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 ```
 
 ### 2.4 mixed 节点（RAG ∥ Tool）
@@ -115,20 +118,17 @@ Agent → Tool → Service → Repository → SQLAlchemy → MySQL
 - **默认串行**（`MIXED_PARALLEL=false`）：单卡 GPU 上 Ollama 推理本身串行，实测并行无收益（并行 180.7/205.8s vs 串行 148.7/199.3s）
 - 并发时用 `contextvars.copy_context()` 传播上下文，保证 profiling 埋点跨线程生效
 
-### 2.4.1 Reranker（可插拔）
+### 2.4.1 Reranker（LLM-as-Reranker）
 
-统一协议 `Reranker.rerank(query, documents, top_n)`，三种实现 + 工厂：
+统一协议 `Reranker.rerank(query, documents, top_n)`，线上唯一实现为
+`LLMReranker`：Qwen3 8B 对向量召回候选进行结构化排序。它在本项目中文商城
+知识库的评测中优于 ONNX cross-encoder，因此不再维护额外的 reranker 模型、
+下载依赖或回退分支。
 
-| 实现 | 说明 |
-| --- | --- |
-| `OnnxCrossEncoderReranker`（默认） | 专业 ONNX cross-encoder（默认 `bge-reranker-base` int8，约 279MB），**固定 CPU 推理、零显存占用**；支持两类打分约定：`sigmoid`（输出 `(batch,1)`）与 `yes_no`（Qwen3-Reranker 因果 LM 取末尾 yes/no logit 差），**按 ONNX 输出形状自动识别** |
-| `LLMReranker` | Qwen3 8B LLM-as-Reranker（旧行为，兜底） |
-| `NoopReranker` | 透传（对照实验） |
-
-- **三级降级链**：主实现 → LLM 兜底 → 退化为向量召回顺序，RAG 永不因重排失败而中断
-- 模型**懒加载**（首次 `rerank` 才下载/载入），不拖慢应用启动与单测
-- 在线链路开关 `RAG_RERANK_ENABLED`（**默认关闭**：当前知识库（13 篇文档、32 chunks）规模仍小，重排增益有限，见 `TROUBLESHOOTING.md` N4–N6）
-- 复用 chromadb 既有传递依赖（`onnxruntime` / `tokenizers` / `huggingface_hub`），**未新增 pip 依赖**
+- 在线链路默认开启：向量 Top-K → LLM 排序 → Top-N
+- 片段输入最多 800 字符，降低尾部关键信息被截断的概率
+- 旧 `reranker_impl` 参数仅用于兼容调用签名，任何非 `llm` 值均被忽略并记录告警
+- 热模型实测（2026-09-21，本机 Ollama）：向量检索约 0.03s，加上 LLM 重排约 0.8s。相对后面数秒的生成，重排不是主延迟，因此默认仍开启
 
 ### 2.4.2 Latency Profiling
 
@@ -141,6 +141,7 @@ Agent → Tool → Service → Repository → SQLAlchemy → MySQL
 
 - 用 Qwen3 把 RAG / Tool 的结果**合成**为完整、自然的最终回答
 - 重试时带上 QA 的 `issues` 作为反馈，要求修正后重新生成
+- 合成使用一次性 `invoke`。同一提示下 `stream` 的首个可见 token 也要约 7s（模型先思考，答案在末尾一次性吐出），改成流式不能提前出字
 
 ### 2.6 QA / Validator
 
@@ -176,6 +177,7 @@ rewrite → cache_gate ──hit──→ cache_finalize → save_memory → END
 ```
 
 - 键 = `hash(模型名 + 归一化问题)`；换模型天然失效
+- 只缓存 `route=rag` 且 QA 通过的回答。`tool` / `mixed` 含订单或库存，不写入；读到旧的非 rag 缓存视为未命中
 - 知识库变更（上传/删除文档）→ `management` 调用 `cache.clear()`
 - 命中时不调用任何 LLM，直接恢复 `route / final_answer / citations / qa_result`
 

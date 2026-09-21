@@ -229,6 +229,32 @@ def test_route_query_rules_only_mode(monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("K87 卖多少", "tool"),
+        ("请问这款耳机的售价是多少", "tool"),
+        ("查一下我的订单", "tool"),
+        ("这单到了没有", "tool"),
+        ("包裹到了没", "tool"),
+        ("能开发票吗", "rag"),
+        ("几点营业", "rag"),
+        ("K87 卖多少，能退吗", "mixed"),
+    ],
+)
+def test_rule_route_covers_paraphrases(question: str, expected: str):
+    """词表外的常见说法仍由规则判定，不把明确问题推给模型。"""
+    result = rule_route(question)
+    assert result is not None, question
+    assert result[0] == expected
+
+
+@pytest.mark.parametrize("question", ["你们商城卖手机吗？", "帮我处理一下"])
+def test_rule_route_leaves_ambiguous_questions(question: str):
+    """没有政策词、也没有业务事实时保持不判定，交给 LLM，而不是猜一条路由。"""
+    assert rule_route(question) is None
+
+
 def test_route_query_legacy_llm_mode(monkeypatch):
     """llm 模式（旧行为）：跳过规则，始终用完整提示词调一次 LLM。"""
     calls: list[str] = []

@@ -113,8 +113,8 @@ q_rag_001, q_tool_001, q_mixed_001, q_multi_001, q_err_001, q_amb_001
 | `cross_encoder` Qwen3-Reranker-0.6B q4 | 1.00 | 0.80 | 3.6s | **0（CPU）** |
 
 > 评测基于初始知识库（5 文档/9 chunks）。当前知识库已扩展至 13 文档/32 chunks，
-> 默认重排器已切换为 cross_encoder（`RERANKER_IMPL=cross_encoder`），
-> `RAG_RERANK_ENABLED=true`。扩展后的评测数据需重新运行。
+> 当前线上重排器为 LLM（`RERANKER_IMPL=llm`，`RAG_RERANK_ENABLED=true`）；
+> 上表保留为历史选型数据，ONNX cross-encoder 已不再随项目发布。
 
 ## 3.3 大知识库重排评测（构造评测集，观察"知识库规模"的影响）
 

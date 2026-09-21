@@ -3,7 +3,7 @@
 让 LLM 通过 Tool Calling 使用业务数据：
     自然语言问题 → 正确 Tool → 正确参数 → MySQL → 正确结果
 
-链路：Agent → Tool → Service → Repository → MySQL（禁止 Agent → SQL → MySQL）。
+链路：Agent → Tool → queries → Repository → MySQL（禁止 Agent → SQL → MySQL）。
 
 子图契约（Phase 08）：
     输入 query → 输出 answer + tool_calls

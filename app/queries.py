@@ -1,7 +1,8 @@
-"""业务逻辑层（Service）。
+"""业务数据查询。
 
-链路：Tool → Service → Repository → MySQL
-负责编排、把 ORM 对象转为对外 dict，并将 SQLAlchemy 异常转换为 DatabaseError。
+链路：Tool（参数校验）→ 本模块 → Repository → MySQL。
+这里只把 ORM 对象转成 dict，并把 SQLAlchemy 异常转成 DatabaseError。
+HTTP 用例在 app.application，不要和本模块混用「服务」这个名字。
 """
 
 from __future__ import annotations

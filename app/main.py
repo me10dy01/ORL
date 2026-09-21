@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router as api_router
 from app.config import get_settings
-from app.exceptions import NotFoundError, ValidationError
+from app.exceptions import NotFoundError, PayloadTooLargeError, ValidationError
 from app.logging_config import setup_logging
 
 settings = get_settings()
@@ -54,6 +54,12 @@ def admin() -> FileResponse:
 async def validation_exception_handler(request: Request, exc: ValidationError) -> JSONResponse:
     logger.warning("validation error: %s", exc)
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(PayloadTooLargeError)
+async def payload_too_large_handler(request: Request, exc: PayloadTooLargeError) -> JSONResponse:
+    logger.warning("payload too large: %s", exc)
+    return JSONResponse(status_code=413, content={"detail": str(exc)})
 
 
 @app.exception_handler(NotFoundError)

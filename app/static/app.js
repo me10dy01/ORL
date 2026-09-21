@@ -5,6 +5,8 @@ let conversationId = null;
 let streaming = false;
 let currentAbort = null;
 let toastTimer = null;
+let suggestionRequestId = 0;
+const CONVERSATION_STORAGE_KEY = "orl_conversation_id";
 
 const messagesEl = document.querySelector("#messages");
 const statusEl = document.querySelector("#status");
@@ -100,6 +102,35 @@ guardLocalFile();
 // ---- 基础工具 ----
 function newConversationId() {
   return "web-" + Math.random().toString(36).slice(2, 10);
+}
+
+// sessionStorage 在隐私模式或受限 WebView 中可能不可用；会话恢复不能影响主对话。
+function getSessionStorage() {
+  try {
+    return window.sessionStorage || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveConversationId(cid) {
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.setItem(CONVERSATION_STORAGE_KEY, cid);
+  } catch {
+    /* 存储不可写时仅跳过会话恢复，不影响当前页面。 */
+  }
+}
+
+function clearSavedConversationId() {
+  const storage = getSessionStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(CONVERSATION_STORAGE_KEY);
+  } catch {
+    /* 存储不可写时无需阻塞新会话。 */
+  }
 }
 
 function formatTime(iso) {
@@ -411,8 +442,10 @@ function renderSuggestions(questions) {
 // 根据对话上下文推荐后续问题（异步，不阻塞）。
 // context_text 由前端直传，消除 MySQL 写入竞态。
 async function loadSuggestedFaq(cid, contextText) {
+  const requestId = ++suggestionRequestId;
   if (!cid) {
     console.warn("[suggest] skipped: no conversation id");
+    renderSuggestions([]);
     return;
   }
   try {
@@ -424,16 +457,22 @@ async function loadSuggestedFaq(cid, contextText) {
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
+      if (requestId !== suggestionRequestId || cid !== conversationId) return;
       console.warn("[suggest] http error", resp.status);
+      renderSuggestions([]);
+      toast("推荐问题加载失败（HTTP " + resp.status + "），请检查后端服务", "error");
       return;
     }
     const data = await resp.json();
+    // 会话切换后，旧请求不得覆盖当前会话的推荐问题。
+    if (requestId !== suggestionRequestId || cid !== conversationId) return;
     console.log("[suggest] received", data.questions);
     renderSuggestions(data.questions);
   } catch (err) {
+    if (requestId !== suggestionRequestId || cid !== conversationId) return;
     console.warn("[suggest] failed", err);
-    /* 推荐失败时隐藏推荐区域 */
     renderSuggestions([]);
+    toast("推荐问题加载失败，请检查网络连接", "error");
   }
 }
 
@@ -473,12 +512,15 @@ async function deleteSelectedConversations() {
   const data = await resp.json();
   if (ids.includes(conversationId)) {
     conversationId = null;
+    clearSavedConversationId();
+    suggestionRequestId += 1;
     messagesEl.replaceChildren();
     const hint = document.createElement("div");
     hint.className = "empty-hint";
     hint.textContent = "会话已删除，请输入新的问题。";
     messagesEl.append(hint);
     setStatus("");
+    renderSuggestions([]);
   }
   selectedConversations.clear();
   toast(`已删除 ${data.deleted_conversations} 个会话`, "success");
@@ -614,18 +656,23 @@ async function deleteConversation(cid) {
   toast("已删除会话", "success");
   if (cid === conversationId) {
     conversationId = null;
+    clearSavedConversationId();
+    suggestionRequestId += 1;
     messagesEl.replaceChildren();
     const hint = document.createElement("div");
     hint.className = "empty-hint";
     hint.textContent = "会话已删除，请输入新的问题。";
     messagesEl.append(hint);
     setStatus("");
+    renderSuggestions([]);
   }
   loadConversations();
 }
 
 async function loadConversation(cid) {
   conversationId = cid;
+  // 使上一会话的异步推荐结果失效，避免竞态覆盖。
+  suggestionRequestId += 1;
   setStatus("正在加载会话…");
   try {
     const resp = await fetch(`${API}/conversations/${encodeURIComponent(cid)}`);
@@ -646,6 +693,16 @@ async function loadConversation(cid) {
       messagesEl.append(div);
     });
     scrollDown();
+    saveConversationId(cid);
+    // 恢复推荐问题（从知识库返回或刷新页面时）
+    const lastMsg = data.messages[data.messages.length - 1];
+    if (lastMsg && lastMsg.role === "assistant") {
+      const lastUserMsg = data.messages.slice().reverse().find((m) => m.role === "user");
+      const contextText = lastUserMsg
+        ? `用户: ${lastUserMsg.content}\n客服: ${lastMsg.content}`
+        : "";
+      loadSuggestedFaq(cid, contextText);
+    }
   } catch (e) {
     toast("加载会话失败：" + e.message, "error");
   } finally {
@@ -670,6 +727,8 @@ document.addEventListener("keydown", (e) => {
 newConvBtn.onclick = () => {
   if (streaming) abortStream();
   conversationId = newConversationId();
+  clearSavedConversationId();
+  suggestionRequestId += 1;
   messagesEl.replaceChildren();
   const hint = document.createElement("div");
   hint.className = "empty-hint";
@@ -684,3 +743,19 @@ newConvBtn.onclick = () => {
 
 loadConversations();
 loadFaq();
+
+// 从知识库返回或刷新后自动恢复当前会话
+(async function restoreSession() {
+  const storage = getSessionStorage();
+  let savedCid = null;
+  try {
+    savedCid = storage ? storage.getItem(CONVERSATION_STORAGE_KEY) : null;
+  } catch {
+    savedCid = null;
+  }
+  if (savedCid) {
+    conversationId = savedCid;
+    await loadConversation(savedCid);
+    loadConversations(); // 刷新高亮
+  }
+})();

@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from app.rag.pipeline import retrieve_baseline, retrieve_optimized
+from app.rag.pipeline import retrieve
 
 # RAG 类测试问题（问题, 预期关键词）
 RAG_EVAL_CASES = [
@@ -41,7 +41,7 @@ def evaluate(
 ) -> dict:
     """对测试集运行 Baseline 与 Optimized 检索，返回对比指标。
 
-    reranker_impl 为空时使用配置的默认重排器；显式传入可对比不同实现。
+    项目统一使用 LLM-as-Reranker；``reranker_impl`` 仅为兼容旧调用签名保留。
     """
     cases = cases or RAG_EVAL_CASES
     base_hits = opt_hits = 0
@@ -49,9 +49,13 @@ def evaluate(
     details: list[dict] = []
 
     for query, keywords in cases:
-        base = retrieve_baseline(query, top_n=top_n)
-        opt = retrieve_optimized(
-            query, top_k=top_k, top_n=top_n, reranker_impl=reranker_impl
+        base = retrieve(query, top_k=top_n, rerank=False)
+        opt = retrieve(
+            query,
+            top_k=top_k,
+            top_n=top_n,
+            rerank=True,
+            reranker_impl=reranker_impl,
         )
         bh = _hit(base, keywords)
         oh = _hit(opt, keywords)

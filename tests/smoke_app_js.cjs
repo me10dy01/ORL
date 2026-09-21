@@ -44,7 +44,14 @@ knownIds.add("toast"); // 由 app.js 在运行时创建
 const invalidSelectors = [];
 
 global.Node = function Node() {};
-global.window = {};
+const sessionData = new Map();
+global.window = {
+  sessionStorage: {
+    getItem: (key) => sessionData.get(key) || null,
+    setItem: (key, value) => sessionData.set(key, String(value)),
+    removeItem: (key) => sessionData.delete(key),
+  },
+};
 global.location = { protocol: "http:" };
 global.document = {
   querySelector(selector) {
