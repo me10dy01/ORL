@@ -26,7 +26,12 @@ from app.agents.qa_agent import MAX_RETRY, rule_check, validate_answer
 from app.agents.query_rewrite import rewrite_query
 from app.agents.rag_agent import rag_agent, run_rag_agent
 from app.agents.supervisor import route_query
-from app.agents.tool_agent import run_tool_agent, tool_agent
+from app.agents.tool_agent import (
+    needs_order_identifier,
+    run_tool_agent,
+    tool_agent,
+    user_supplied_text,
+)
 from app.config import get_settings
 from app.llm import get_chat_model
 
@@ -193,7 +198,11 @@ def mixed_parallel_node(state: MainState) -> dict:
                 )
             if tool_query:
                 futures["tool"] = pool.submit(
-                    contextvars.copy_context().run, run_tool_agent, tool_query
+                    contextvars.copy_context().run,
+                    run_tool_agent,
+                    tool_query,
+                    state["user_query"],
+                    state.get("history") or [],
                 )
             if "rag" in futures:
                 rag_result = futures["rag"].result()
@@ -203,7 +212,11 @@ def mixed_parallel_node(state: MainState) -> dict:
         if rag_query:
             rag_result = run_rag_agent(rag_query)
         if tool_query:
-            tool_result = run_tool_agent(tool_query)
+            tool_result = run_tool_agent(
+                tool_query,
+                user_query=state["user_query"],
+                history=state.get("history") or [],
+            )
 
     updates: dict = {}
     if rag_result:
@@ -269,6 +282,17 @@ def synthesis_node(state: MainState) -> dict:
     if route == "rag" and rag_answer and not feedback:
         return {"draft_answer": rag_answer}
 
+    # 只是在追问订单号时，不要再合成，避免模型把示例订单号写进回答。
+    tool_answer = tool.get("answer")
+    if (
+        route == "tool"
+        and tool_answer
+        and not (state.get("tool_calls") or [])
+        and not feedback
+        and needs_order_identifier(user_supplied_text(state))
+    ):
+        return {"draft_answer": tool_answer}
+
     try:
         draft = _synthesize(
             state.get("rewritten_query") or state["user_query"],
@@ -310,6 +334,7 @@ def qa_node(state: MainState) -> dict:
                 has_citations=has_citations,
                 tool_calls=state.get("tool_calls") or [],
                 context_text=context_text,
+                missing_identifier=needs_order_identifier(user_supplied_text(state)),
             )
             if verdict is not None:
                 qa_dict = verdict.model_dump()

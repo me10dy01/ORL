@@ -57,6 +57,27 @@ def test_suggestion_service_returns_empty_without_history(monkeypatch) -> None:
     assert suggestion_service.suggest_questions("conv-empty") == []
 
 
+def test_suggestion_disables_reasoning_and_keeps_questions(monkeypatch) -> None:
+    captured: dict = {}
+
+    class _Response:
+        content = "<think>先想一下</think>\n1. 订单号在哪里看？\n发货后一般几天能到？"
+
+    def fake_get_chat_model(**kwargs):
+        captured.update(kwargs)
+
+        class _LLM:
+            def invoke(self, messages):
+                return _Response()
+
+        return _LLM()
+
+    monkeypatch.setattr(suggestion_service, "get_chat_model", fake_get_chat_model)
+    questions = suggestion_service.suggest_questions("conv-1", context_text="用户: 怎么查订单")
+    assert captured.get("reasoning") is False
+    assert questions == ["订单号在哪里看？", "发货后一般几天能到？"]
+
+
 def test_rename_rejects_blank_title() -> None:
     with pytest.raises(ValidationError):
         conversation_service.rename_conversation("conv-1", "   ")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -10,6 +11,24 @@ from app import memory
 from app.llm import get_chat_model
 
 logger = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_LIST_PREFIX_RE = re.compile(r"^(?:\d+[\.、\)]\s*|[-*•]\s*)")
+
+
+def _visible_text(content: object) -> str:
+    """取出可见回答，丢掉思考过程。思考吃满 token 时 content 会是空的。"""
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                parts.append(str(block.get("text") or block.get("content") or ""))
+        text = "\n".join(parts)
+    else:
+        text = content if isinstance(content, str) else str(content or "")
+    return _THINK_RE.sub("", text).strip()
 
 
 def suggest_questions(conversation_id: str, context_text: str | None = None) -> list[str]:
@@ -28,10 +47,12 @@ def suggest_questions(conversation_id: str, context_text: str | None = None) -> 
         "要求：\n"
         "1. 问题要简短自然，像真实用户会问的\n"
         "2. 与对话内容相关，不要重复已经回答过的问题\n"
-        "3. 每行一个问题，不要编号，不要其他内容"
+        "3. 不要针对某一个具体商品型号\n"
+        "4. 每行一个问题，不要编号，不要其他内容"
     )
     try:
-        llm = get_chat_model(num_predict=200, temperature=0.3)
+        # 关闭思考：num_predict 很小，思考 token 会把可见问题挤成空列表。
+        llm = get_chat_model(num_predict=128, temperature=0.3, reasoning=False)
         response = llm.invoke(
             [
                 SystemMessage(
@@ -40,8 +61,12 @@ def suggest_questions(conversation_id: str, context_text: str | None = None) -> 
                 HumanMessage(content=prompt),
             ]
         )
-        content = response.content if isinstance(response.content, str) else str(response.content)
-        return [line.strip() for line in content.strip().split("\n") if line.strip()][:3]
+        lines = []
+        for raw in _visible_text(response.content).splitlines():
+            line = _LIST_PREFIX_RE.sub("", raw.strip()).strip()
+            if line:
+                lines.append(line)
+        return lines[:3]
     except Exception:
         logger.warning("后续问题推荐失败", exc_info=True)
         return []

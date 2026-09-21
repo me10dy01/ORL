@@ -97,6 +97,7 @@ def rule_check(
     has_citations: bool,
     tool_calls: list[dict],
     context_text: str,
+    missing_identifier: bool = False,
 ) -> QAResult | None:
     """规则质检（0 次 LLM 调用）。
 
@@ -105,6 +106,7 @@ def rule_check(
     只做结构性判定，**不会因规则误伤而否掉好答案**：
 
     - 硬失败：回答为空/过短、应有溯源却缺失、应调工具却未调
+    - 用户在查订单但没给订单号：允许只追问、不调工具
     - 快速通过：结构完整，且回答与上下文词面一致
     - 其余（如词面重合度过低、疑似编造）→ None，交给 LLM
     """
@@ -115,6 +117,12 @@ def rule_check(
     if expects_rag and not has_citations:
         return _verdict(False, "RAG 回答缺少溯源依据", citation_valid=False)
     if expects_tool and not tool_calls:
+        if missing_identifier:
+            return _verdict(
+                True,
+                "用户未提供订单号，回答改为追问",
+                citation_valid=has_citations or not expects_rag,
+            )
         return _verdict(False, "未调用任何业务工具", citation_valid=has_citations)
 
     if context_text and _overlap_ratio(answer, context_text) < MIN_CONTEXT_OVERLAP:

@@ -15,6 +15,7 @@ def _check(
     has_citations: bool = False,
     tool_calls: list[dict] | None = None,
     context_text: str = CTX,
+    missing_identifier: bool = False,
 ) -> QAResult | None:
     return rule_check(
         answer,
@@ -23,6 +24,7 @@ def _check(
         has_citations=has_citations,
         tool_calls=tool_calls or [],
         context_text=context_text,
+        missing_identifier=missing_identifier,
     )
 
 
@@ -52,6 +54,17 @@ def test_rule_fails_when_tool_not_called() -> None:
     verdict = _check("订单状态为已发货。", expects_tool=True, tool_calls=[])
     assert verdict is not None
     assert verdict.passed is False
+
+
+def test_rule_passes_when_user_did_not_give_order_id() -> None:
+    verdict = _check(
+        "请提供订单号后再查询。订单号以 ORD 开头，后面是 8 位数字。",
+        expects_tool=True,
+        tool_calls=[],
+        missing_identifier=True,
+    )
+    assert verdict is not None
+    assert verdict.passed is True
 
 
 def test_rule_fails_on_too_short_answer() -> None:

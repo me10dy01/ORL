@@ -74,12 +74,21 @@ def test_cache_endpoints() -> None:
 
 
 def test_faq_endpoint() -> None:
-    """常见问题列表：静态数据，无需 DB / LLM。"""
+    """常见问题列表：静态数据，无需 DB / LLM，且不针对某一件商品。"""
+    from app.faq import load_faq
+
+    load_faq.cache_clear()
     resp = client.get("/api/faq")
     assert resp.status_code == 200
     items = resp.json()
     assert isinstance(items, list) and items
-    assert all(item.get("question") for item in items)
+    questions = [item.get("question", "") for item in items]
+    assert all(questions)
+    blob = " ".join(questions)
+    assert "H50" not in blob
+    assert "K87" not in blob
+    assert "怎么查看商品的规格和参数？" in questions
+    assert "怎么查询商品价格和库存？" in questions
 
 
 @pytest.mark.usefixtures("initialized_db")

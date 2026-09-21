@@ -19,19 +19,19 @@ def _result_to_text(result: biz_tools.ToolResult) -> str:
 
 
 class ProductIdArgs(BaseModel):
-    product_id: str = Field(description="商品ID，例如 P001")
+    product_id: str = Field(description="商品ID，以 P 开头加数字，必须来自用户原话")
 
 
 class OrderIdArgs(BaseModel):
-    order_id: str = Field(description="订单号，例如 ORD20260001")
+    order_id: str = Field(description="订单号，以 ORD 开头加 8 位数字，必须来自用户原话")
 
 
 class UserIdArgs(BaseModel):
-    user_id: str = Field(description="用户ID，例如 U0001")
+    user_id: str = Field(description="用户ID，以 U 开头加数字，必须来自用户原话")
 
 
 class SearchProductsArgs(BaseModel):
-    keyword: str = Field(description="商品名称或 SKU 关键词，例如 K87")
+    keyword: str = Field(description="商品名称或型号关键词，必须来自用户原话")
 
 
 @tool(args_schema=ProductIdArgs)

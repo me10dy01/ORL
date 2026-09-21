@@ -258,8 +258,9 @@ function renderCitations(bubble, citations) {
 function handleEvent(evt, bubble, renderer) {
   switch (evt.type) {
     case "meta":
-      if (evt.conversation_id && !conversationId) {
+      if (evt.conversation_id) {
         conversationId = evt.conversation_id;
+        saveConversationId(conversationId);
       }
       break;
     case "status":
@@ -321,12 +322,10 @@ async function send() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    const takeEvents = (flush) => {
       const parts = buffer.split("\n\n");
-      buffer = parts.pop();
+      // 流结束时尾部可能没有空行，也要解析，否则 done / 会话 ID 会丢掉。
+      buffer = flush ? "" : parts.pop() || "";
       for (const part of parts) {
         const line = part.trim();
         if (!line.startsWith("data: ")) continue;
@@ -338,6 +337,16 @@ async function send() {
         }
         handleEvent(evt, bubble, renderer);
       }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: !done });
+      if (done) {
+        buffer += decoder.decode();
+        takeEvents(true);
+        break;
+      }
+      takeEvents(false);
     }
   } catch (e) {
     contentEl.classList.remove("streaming");
@@ -353,8 +362,8 @@ async function send() {
     setSendButton(false);
     scrollDown();
     loadConversations();
-    // 前端直传上下文，消除 MySQL 写入竞态
-    const contextText = lastAnswer ? `用户: ${text}\n客服: ${lastAnswer}` : "";
+    const answerText = lastAnswer || renderer.text || "";
+    const contextText = answerText ? `用户: ${text}\n客服: ${answerText}` : "";
     loadSuggestedFaq(conversationId, contextText);
   }
 }
@@ -437,6 +446,8 @@ function renderSuggestions(questions) {
     suggestListEl.append(li);
   });
   suggestSectionEl.classList.remove("hidden");
+  // 回答结束后直接展开，不必再点一次历史会话。
+  setFaqVisible(true);
 }
 
 // 根据对话上下文推荐后续问题（异步，不阻塞）。

@@ -238,7 +238,7 @@ def wired(monkeypatch):
     )
     monkeypatch.setattr(mg, "run_rag_agent", lambda q: {"answer": "RAG 答案", "sources": []})
     monkeypatch.setattr(
-        mg, "run_tool_agent", lambda q: {"answer": "工具答案", "tool_calls": [{"name": "get_order"}]}
+        mg, "run_tool_agent", lambda *a, **k: {"answer": "工具答案", "tool_calls": [{"name": "get_order"}]}
     )
     # 图节点在编译时已绑定真实子图，必须替换子图内部的 LLM 依赖才能真正离线
     from langchain_core.messages import AIMessage
