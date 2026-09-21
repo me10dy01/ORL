@@ -281,11 +281,11 @@ Query → BGE-M3 → Chroma Top-K → Reranker(Qwen3) → Top-N → Qwen3
 ```json
 {
   "document_id": "doc_xxx",
-  "file_name": "退货政策.md",
+  "file_name": "售后与退换货.md",
   "version": 1,
   "chunk_id": "doc_xxx_chunk_000",
   "page": 1,
-  "source": "退货政策.md",
+  "source": "售后与退换货.md",
   "file_hash": "..."
 }
 ```

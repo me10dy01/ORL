@@ -32,6 +32,36 @@ def get_vectorstore() -> Chroma:
     return _store
 
 
+def stale_chunk_ids(
+    ids: list[str],
+    metadatas: list[dict | None],
+    current_hashes: dict[str, str],
+) -> list[str]:
+    """源文件已删除或内容已变的向量块。相同 file_name 且 file_hash 未变则保留。"""
+    stale: list[str] = []
+    for chunk_id, meta in zip(ids, metadatas):
+        meta = meta or {}
+        name = meta.get("file_name")
+        if current_hashes.get(name) != meta.get("file_hash"):
+            stale.append(chunk_id)
+    return stale
+
+
+def remove_stale_chunks(chunks: list[Document]) -> int:
+    """删掉已不在当前知识库中的向量，避免旧文件名和旧正文继续被检索。"""
+    store = get_vectorstore()
+    current_hashes = {
+        chunk.metadata["file_name"]: chunk.metadata["file_hash"] for chunk in chunks
+    }
+    data = store.get(include=["metadatas"])
+    ids = list(data.get("ids") or [])
+    metadatas = list(data.get("metadatas") or [])
+    stale = stale_chunk_ids(ids, metadatas, current_hashes)
+    if stale:
+        store.delete(ids=stale)
+    return len(stale)
+
+
 def _existing_file_hashes(store: Chroma) -> set[str]:
     """返回已入库文档的 file_hash 集合，用于去重。"""
     data = store.get(include=["metadatas"])

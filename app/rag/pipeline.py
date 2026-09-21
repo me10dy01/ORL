@@ -13,13 +13,19 @@ settings = get_settings()
 
 
 def build_index() -> dict:
-    """构建知识库索引，返回统计信息。"""
+    """按当前 data/documents 重建增量索引，并清掉已删除或已改写文件的旧向量。"""
+    from app import cache
+
     docs = documents.load_documents()
     chunks = documents.chunk_documents(docs)
+    removed = vectorstore.remove_stale_chunks(chunks)
     ingested = vectorstore.ingest_documents(chunks)
+    if removed or ingested:
+        cache.clear()
     return {
         "documents": len(docs),
         "chunks": len(chunks),
+        "removed_chunks": removed,
         "ingested_chunks": ingested,
     }
 

@@ -42,7 +42,7 @@ def ingest_document(file_name: str, content: bytes) -> dict:
     path = save_document(file_name, content)
     result = pipeline.build_index()
     result["file_name"] = path.name
-    if result.get("ingested_chunks"):
+    if result.get("ingested_chunks") or result.get("removed_chunks"):
         cache.clear()
     return result
 

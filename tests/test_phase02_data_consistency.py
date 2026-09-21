@@ -154,3 +154,41 @@ def test_documents_reference_k87() -> None:
     """核心示例商品 K87 应出现在知识库中，保证与 AGENTS.md 示例一致。"""
     texts = [doc.read_text(encoding="utf-8") for doc in DOCUMENTS_DIR.glob("*.md")]
     assert any("K87" in t for t in texts), "知识库文档中未出现核心示例商品 K87"
+
+
+def test_documents_keep_single_policy_facts() -> None:
+    """整合后的知识库不再自相矛盾，也不把单笔订单状态写进政策文档。"""
+    docs = list(DOCUMENTS_DIR.glob("*.md"))
+    names = {doc.name for doc in docs}
+    assert "售后与退换货.md" in names
+    assert "物流与配送.md" in names
+    assert "在售商品说明.md" in names
+    assert "退货政策.md" not in names
+    assert "商品常见问题FAQ.md" not in names
+
+    corpus = "\n".join(doc.read_text(encoding="utf-8") for doc in docs)
+    assert "无理由退货" in corpus
+    assert "24 小时" in corpus
+    assert "保修期为 2 年" in corpus
+    assert "400-888-0000" in corpus
+    assert "400-123-4567" not in corpus
+    assert "有线机械键盘" not in corpus
+    assert "ORD2026" not in corpus
+    assert "秒杀订单须在下单后 **15 分钟内**支付" in corpus
+    assert "30 分钟内完成支付" not in corpus
+
+
+def test_stale_vectors_follow_current_files() -> None:
+    from app.rag.vectorstore import stale_chunk_ids
+
+    current = {"售后与退换货.md": "new"}
+    ids = stale_chunk_ids(
+        ["old-file", "old-body", "keep"],
+        [
+            {"file_name": "退货政策.md", "file_hash": "a"},
+            {"file_name": "售后与退换货.md", "file_hash": "old"},
+            {"file_name": "售后与退换货.md", "file_hash": "new"},
+        ],
+        current,
+    )
+    assert ids == ["old-file", "old-body"]

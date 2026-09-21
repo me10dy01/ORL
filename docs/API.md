@@ -58,8 +58,8 @@
     {
       "document_id": "doc_d39f940c",
       "chunk_id": "doc_d39f940c_chunk_000",
-      "file_name": "退货政策.md",
-      "source": "退货政策.md",
+      "file_name": "售后与退换货.md",
+      "source": "售后与退换货.md",
       "page": 1
     }
   ],
@@ -163,7 +163,7 @@ curl -N -X POST http://127.0.0.1:8000/api/chat/stream \
 ### 示例
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/documents -F "file=@退货政策.md"
+curl -X POST http://127.0.0.1:8000/api/documents -F "file=@售后与退换货.md"
 ```
 
 ### 错误
@@ -184,7 +184,7 @@ curl -X POST http://127.0.0.1:8000/api/documents -F "file=@退货政策.md"
 [
   {
     "document_id": "doc_d39f940c",
-    "file_name": "退货政策.md",
+    "file_name": "售后与退换货.md",
     "file_hash": "31a33cfe...",
     "chunk_count": 2
   }
@@ -215,7 +215,7 @@ curl -X POST http://127.0.0.1:8000/api/documents -F "file=@退货政策.md"
   "changed": true,
   "old_document_id": "doc_d39f940c",
   "new_document_id": "doc_d39f940c",
-  "file_name": "退货政策.md",
+  "file_name": "售后与退换货.md",
   "deleted_chunks": 2,
   "ingested_chunks": 3,
   "documents": 5,
@@ -230,7 +230,7 @@ curl -X POST http://127.0.0.1:8000/api/documents -F "file=@退货政策.md"
   "changed": false,
   "old_document_id": "doc_d39f940c",
   "new_document_id": "doc_d39f940c",
-  "file_name": "退货政策.md",
+  "file_name": "售后与退换货.md",
   "deleted_chunks": 0,
   "ingested_chunks": 0
 }
@@ -258,7 +258,7 @@ curl -X PUT http://127.0.0.1:8000/api/documents/doc_d39f940c -F "file=@退货政
 ```json
 {
   "document_id": "doc_d39f940c",
-  "file_name": "退货政策.md",
+  "file_name": "售后与退换货.md",
   "deleted_chunks": 2,
   "file_removed": true
 }

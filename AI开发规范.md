@@ -534,7 +534,7 @@ RAG 回答必须保留来源。
 例如：
 
 {
-    "source": "退货政策.md",
+    "source": "售后与退换货.md",
     "document_id": "doc_001",
     "chunk_id": "chunk_007",
     "page": 2
