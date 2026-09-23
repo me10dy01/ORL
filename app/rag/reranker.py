@@ -75,20 +75,9 @@ class LLMReranker:
 _reranker = LLMReranker()
 
 
-def get_reranker(impl: str | None = None) -> Reranker:
-    """返回唯一支持的 LLM 重排器。
-
-    ``impl`` 仅为兼容旧调用签名保留；非 ``llm`` 值会被忽略并记录告警，
-    确保线上不会悄然切换回已移除的模型。
-    """
-    if impl not in (None, "llm"):
-        logger.warning("忽略已移除的 reranker 配置: %s；统一使用 llm", impl)
+def get_reranker() -> Reranker:
+    """返回 LLM 重排器单例。"""
     return _reranker
-
-
-def rerank(query: str, candidates: list[dict], top_n: int) -> list[dict]:
-    """兼容入口：使用 LLM 重排候选片段。"""
-    return _reranker.rerank(query, candidates, top_n)
 
 
 def _validate_order(indices: list[int], n: int) -> list[int]:
@@ -103,4 +92,4 @@ def _validate_order(indices: list[int], n: int) -> list[int]:
     return order
 
 
-__all__ = ["Reranker", "LLMReranker", "get_reranker", "rerank"]
+__all__ = ["Reranker", "LLMReranker", "get_reranker"]

@@ -114,7 +114,7 @@
 ### P12. mixed 路由未回写 `tool_calls`（我引入的 bug）
 
 - **现象**：mixed 请求触发**3 轮无意义重试**，单题耗时飙到 **40+ 分钟**
-- **根因**：`mixed_parallel_node` 只写了 `tool_result`，未写 `state["tool_calls"]`；QA 规则看到 `expects_tool=True` 但 `tool_calls=[]` → 判失败 → 反复重试
+- **根因**：`mixed_node` 只写了 `tool_result`，未写 `state["tool_calls"]`；QA 规则看到 `expects_tool=True` 但 `tool_calls=[]` → 判失败 → 反复重试
 - **解决**：节点同时回写 `tool_calls`
 - **状态**：✅ 已解决（mixed 47.5s、`retry=0`）
 
@@ -243,7 +243,7 @@
 - **现象**：Router 关闭思考后延迟 6.1s → 1.1s，但 20 题准确率 16/20 → 14/20
 - **解决**：**两级不同设置**——轻量级（短提示词）关思考求快；
   完整提示词复判一级开思考求准（该级仅在轻量级输出无效/冲突时触发，成本可摊销）
-- **效果**：`ROUTER_MODE=auto` 下 20/20（100%），平均 **0.07s**（19 题走规则 0ms）
+- **效果**：分层路由（现已固化）下 20/20（100%），平均 **0.07s**（19 题走规则 0ms）
 - **状态**：✅ 已解决
 
 ### P26. SSE 流式端点下 contextvars 埋点失效
@@ -285,18 +285,18 @@
 
 | 编号 | 项 | 结论 | 依据（实测） |
 | --- | --- | --- | --- |
-| N1 | mixed 路由并行 | **默认改回串行**（保留 `MIXED_PARALLEL` 开关） | 单卡 GPU 上 Ollama 推理本身串行：并行 180.7/205.8s vs 串行 148.7/199.3s，**无收益** |
+| N1 | mixed 路由并行 | **固化串行**（不再保留并行开关） | 单卡 GPU 上 Ollama 推理本身串行：并行 180.7/205.8s vs 串行 148.7/199.3s，**无收益** |
 | N2 | 专用 Reranker（`bge-reranker-v2-m3`） | **不引入该模型** | 显存合计 ≈9GB > 空闲 6.8GB；后续 ONNX 方案在中文语料效果不如 LLM-as-Reranker，现已移除 |
-| N3 | QA 逐句归因默认开启 | **默认关闭** | 每题约 **+100s**；改作离线质检（`evaluate_system --align`） |
+| N3 | QA 逐句归因默认开启 | **仅离线 `--align`** | 每题约 **+100s**；改作离线质检（`evaluate_system --align`） |
 | N4 | 用 Ollama 跑 Qwen3-Reranker-0.6B 做专业重排 | **改走 ONNX** | Ollama 0.34 **无原生 rerank 端点**（`/api/rerank` → 404）；社区 GGUF 以普通因果 LM 加载后打分头不可用（实测输出为标点乱码、`logprobs` 全为 0），拿不到相关度分数 |
 | N5 | Qwen3-Reranker-0.6B（ONNX q4）作默认重排器 | **改用 bge-reranker-base int8** | 同一检索集实测：bge-base **MRR 0.80**、Qwen3-0.6B q4 **MRR 0.70**，且 Qwen3 慢约 **5 倍**（21.4s vs 3.9s / 5 题）。Qwen3-Reranker 的 ONNX 仓只有 q4/quantized 量化版，yes/no logit 精度受损（官方推荐 Q8_0；Ollama 版正是 Q8_0 但无法取分） |
-| N6 | 在线 RAG 默认启用重排 | **开启 LLM 重排** | 当前配置为 `RAG_RERANK_ENABLED=true` + `RERANKER_IMPL=llm`；仅保留在中文语料中效果更好的实现 |
+| N6 | 在线 RAG 默认启用重排 | **固化 LLM 重排** | 在线始终向量 Top-K → LLM → Top-N；仅保留在中文语料中效果更好的实现 |
 
 > 记录负结论比"假装优化过"更有工程价值。
 
 ### 8.1 Reranker 补充说明（模型职责重构后）
 
-- **统一实现**：线上仅保留 `LLMReranker`，由主 Qwen3 模型完成候选排序；旧配置值会显式告警后统一使用 LLM。
+- **统一实现**：线上仅保留 `LLMReranker`，由主 Qwen3 模型完成候选排序。
 - **结构化稳定性**：重排使用 `get_structured_model(reasoning=False, num_predict=128)`，避免思考 token 耗尽导致空结构化输出。
 - **文本覆盖**：候选片段截断从 300 提高到 800 字符，减少政策条件位于段尾时被漏判的风险。
 

@@ -30,7 +30,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 from app.agents.business_tools import BUSINESS_TOOLS, TOOL_BY_NAME
+from app.agents.intent_keywords import (
+    POLICY_KEYWORDS,
+    PRODUCT_SHORT_QUERY_MAX_LEN,
+    PRODUCT_WORDS,
+    TOOL_KEYWORDS,
+)
 from app import profiling
+from app import tools as biz_tools
 from app.llm import get_chat_model
 
 SYSTEM_PROMPT = (
@@ -55,6 +62,7 @@ _ASK = {
 
 _ORDER_ID_RE = re.compile(r"ORD\d{8}", re.IGNORECASE)
 _USER_ID_RE = re.compile(r"\bU\d{3,4}\b", re.IGNORECASE)
+_PRODUCT_ID_RE = re.compile(r"\bP\d{3}\b", re.IGNORECASE)
 _ORDER_LOOKUP_HINTS = (
     "我的订单",
     "订单状态",
@@ -106,11 +114,98 @@ def needs_order_identifier(text: str) -> bool:
     return any(hint in text for hint in _ORDER_LOOKUP_HINTS)
 
 
+def needs_product_clarify(text: str) -> str | None:
+    """纯品类短查询时返回搜索关键词；否则返回 None（交由 LLM ReAct）。
+
+    与 Supervisor 品类规则对齐：有品类词、无强实体、无政策/价格等明确意图、短句。
+    """
+    query = (text or "").strip()
+    if not query or len(query) > PRODUCT_SHORT_QUERY_MAX_LEN:
+        return None
+    if (
+        _ORDER_ID_RE.search(query)
+        or _USER_ID_RE.search(query)
+        or _PRODUCT_ID_RE.search(query)
+    ):
+        return None
+    if any(k in query for k in POLICY_KEYWORDS):
+        return None
+    if any(k in query for k in TOOL_KEYWORDS):
+        return None
+    hits = [w for w in PRODUCT_WORDS if w in query]
+    if not hits:
+        return None
+    return max(hits, key=len)
+
+
+def _format_product_search(
+    keyword: str, result: biz_tools.ToolResult
+) -> tuple[str, list[dict]]:
+    """按命中数生成终稿回答，并记录已执行的 search_products。"""
+    tool_calls = [{"name": "search_products", "args": {"keyword": keyword}}]
+    if not result.ok:
+        err = result.error or "未知错误"
+        return f"商品查询暂时失败：{err}。请稍后再试。", tool_calls
+
+    products = result.data if isinstance(result.data, list) else []
+    if not products:
+        return f"未找到与「{keyword}」相关的商品，请换个关键词试试。", tool_calls
+
+    if len(products) == 1:
+        p = products[0]
+        desc = (p.get("description") or "").strip()
+        answer = (
+            f"为您找到：{p.get('name')}（{p.get('sku')}），"
+            f"售价 {p.get('price')} 元，商品编号 {p.get('product_id')}。"
+        )
+        if desc:
+            answer = f"{answer}{desc}"
+        return answer, tool_calls
+
+    lines = [f"找到 {len(products)} 款与「{keyword}」相关的商品："]
+    for p in products:
+        lines.append(
+            f"- {p.get('name')}（{p.get('sku')}，{p.get('price')} 元）"
+        )
+    lines.append("请问您想了解哪一款？")
+    return "\n".join(lines), tool_calls
+
+
+def _rule_product_search(keyword: str) -> tuple[str, list[dict]]:
+    """强制走 Tool → queries → Repository，不经 LLM。"""
+    with profiling.stage("tool_exec"):
+        try:
+            writer = get_stream_writer()
+            writer(
+                {
+                    "type": "tool",
+                    "name": "search_products",
+                    "args": {"keyword": keyword},
+                }
+            )
+        except Exception:
+            pass
+        result = biz_tools.search_products(keyword)
+    return _format_product_search(keyword, result)
+
+
 def init_node(state: ToolAgentState) -> dict:
-    """把 query 转为首条用户消息。缺订单号时直接追问，不调用模型。"""
+    """把 query 转为首条用户消息。
+
+    缺订单号 / 纯品类短查询时规则短路，不调用模型。
+    """
     source = user_supplied_text(state)
     if needs_order_identifier(source):
         return {"messages": [AIMessage(content=_ASK["order_id"])]}
+
+    keyword = needs_product_clarify(source)
+    if keyword is not None:
+        answer, tool_calls = _rule_product_search(keyword)
+        return {
+            "messages": [AIMessage(content=answer)],
+            "tool_calls": tool_calls,
+        }
+
     return {"messages": [HumanMessage(content=state["query"])]}
 
 
@@ -276,6 +371,12 @@ def finalize_node(state: ToolAgentState) -> dict:
     messages = state["messages"]
     raw = messages[-1].content
     answer = raw if isinstance(raw, str) else str(raw)
+
+    # 品类强制检索等规则短路已写入 tool_calls，直接保留
+    preset = state.get("tool_calls") or []
+    if preset:
+        return {"answer": answer, "tool_calls": preset}
+
     rejected = _rejected_call_ids(messages)
     tool_calls = [
         {"name": c["name"], "args": c["args"]}

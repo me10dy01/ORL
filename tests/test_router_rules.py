@@ -4,7 +4,6 @@
 - RulePreCheck 在 20 题评测集上的覆盖率与准确率
 - 路由一致性与任务完整性校验（_validate_routing）
 - auto 模式升级链（monkeypatch _route_by_llm，不真实调用模型）
-- rules_only / llm 模式行为
 """
 
 from __future__ import annotations
@@ -191,14 +190,13 @@ def test_route_query_fallback_after_repeated_conflict(monkeypatch):
     assert result.tasks and result.tasks[0].agent == "rag"
 
 
-def test_route_query_legacy_entity_conflict_fallback(monkeypatch):
-    """llm 模式安全网：LLM 判 rag 但输入含订单号 → 冲突 → fallback。"""
+def test_route_query_entity_conflict_fallback(monkeypatch):
+    """LLM 判 rag 但输入含订单号 → 校验冲突 → 逐级降级至 fallback。"""
     calls: list[str] = []
     monkeypatch.setattr(supervisor, "_route_by_llm", _fake_llm("rag", calls))
-    monkeypatch.setattr(supervisor.settings, "router_mode", "llm")
-    result = route_query("ORD20260001 到哪了？")
-    # legacy 模式只有一级 LLM 调用：full 输出与实体冲突 → 直接 fallback
-    assert calls == ["llm_full"]
+    # qa_feedback 跳过规则直判，迫使走 LLM 升级链
+    result = route_query("ORD20260001 到哪了？", qa_feedback=["需要查订单状态"])
+    assert calls == ["llm_short", "llm_full"]
     assert result.decision_path == "fallback"
     assert result.route == "rag"
 
@@ -215,18 +213,6 @@ def test_route_query_llm_exception_falls_through(monkeypatch):
     result = route_query("你们商城卖手机吗？")
     assert result.decision_path == "fallback"
     assert result.route == "rag"
-
-
-def test_route_query_rules_only_mode(monkeypatch):
-    """rules_only：规则判定不了时保守 rag，绝不调用 LLM。"""
-    calls: list[str] = []
-    monkeypatch.setattr(supervisor, "_route_by_llm", _fake_llm("rag", calls))
-    monkeypatch.setattr(supervisor.settings, "router_mode", "rules_only")
-    hit = route_query("K87 机械键盘现在多少钱？")
-    assert hit.decision_path == "rules" and hit.route == "tool"
-    miss = route_query("你们商城卖手机吗？")
-    assert miss.decision_path == "fallback" and miss.route == "rag"
-    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -253,17 +239,6 @@ def test_rule_route_covers_paraphrases(question: str, expected: str):
 def test_rule_route_leaves_ambiguous_questions(question: str):
     """没有政策词、也没有业务事实时保持不判定，交给 LLM，而不是猜一条路由。"""
     assert rule_route(question) is None
-
-
-def test_route_query_legacy_llm_mode(monkeypatch):
-    """llm 模式（旧行为）：跳过规则，始终用完整提示词调一次 LLM。"""
-    calls: list[str] = []
-    monkeypatch.setattr(supervisor, "_route_by_llm", _fake_llm("mixed", calls))
-    monkeypatch.setattr(supervisor.settings, "router_mode", "llm")
-    result = route_query("退货政策是什么")
-    assert result.route == "mixed"
-    assert result.decision_path == "llm_full"
-    assert calls == ["llm_full"]
 
 
 def test_route_query_with_qa_feedback_skips_rules(monkeypatch):

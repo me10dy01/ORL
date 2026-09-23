@@ -46,7 +46,7 @@
 flowchart TD
     subgraph ING["① 知识入库（离线：初始化时 / 上传文档时）"]
         direction LR
-        DOC["知识文档<br/>md / markdown / txt / pdf / docx"] --> CHUNK["切分 Chunk"]
+        DOC["知识文档<br/>md / txt / pdf / docx"] --> CHUNK["切分 Chunk"]
         CHUNK --> EMB["BGE-M3 向量化"]
         EMB --> CHROMA[("Chroma 向量库<br/>只存【知识】的向量")]
     end
@@ -155,11 +155,13 @@ tests/                130 个测试（83 快速 + 47 slow）
 
 ---
 
-## 4. 配置项（`.env`）
+## 4. 配置项
+
+默认值在 [`app/config.py`](app/config.py)；`.env` 只需覆盖本机差异（尤其 `MYSQL_PASSWORD`）。完整可覆盖键见 [`.env.example`](.env.example)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `APP_NAME` / `APP_ENV` / `HOST` / `PORT` / `LOG_LEVEL` | — | 应用信息与日志级别 |
+| `APP_NAME` / `LOG_LEVEL` | — | 应用名与日志级别 |
 | `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_DB` | `127.0.0.1` / `3306` / `root` / 空 / `orl_dev` | 业务库与对话记忆库 |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | 本地 Ollama 地址 |
 | `OLLAMA_NUM_CTX` | `4096` | 上下文窗口（性能关键，详见 [METRICS.md](docs/METRICS.md)） |
@@ -167,17 +169,13 @@ tests/                130 个测试（83 快速 + 47 slow）
 | `OLLAMA_NUM_PREDICT` | `512` | 单次最大输出 token 数：**直接决定长文本生成的耗时上限** |
 | `EMBEDDING_MODEL` / `LLM_MODEL` | `bge-m3` / `qwen3:8b` | 本地模型 |
 | `CHROMA_PERSIST_DIR` / `CHROMA_COLLECTION` | `data/chroma` / `xingchen_knowledge` | 向量库持久化与集合名 |
-| `RAG_TOP_K` | `4` | RAG 检索条数 |
+| `RAG_TOP_K` | `4` | 评测基线向量召回条数（在线路径用下方 Rerank） |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `50` | 切分参数 |
-| `RERANK_TOP_K` / `RERANK_TOP_N` | `6` / `3` | Rerank 前候选数与最终条数 |
-| `RERANKER_IMPL` | `llm` | 仅保留兼容字段。线上固定 LLM 重排，其它值会被忽略 |
-| `RAG_RERANK_ENABLED` | `true` | 在线 RAG 启用：向量 Top-K → LLM 排序 → Top-N |
-| `ROUTER_MODE` | `auto` | Supervisor 路由策略：`auto`（规则优先，0 次 LLM）/ `rules_only` / `llm`（旧行为） |
+| `RERANK_TOP_K` / `RERANK_TOP_N` | `6` / `3` | 在线 RAG：向量候选数与重排后条数（已固化 LLM 重排） |
 | `ROUTER_LLM_MODEL` | 空 | Router 专用模型，留空复用 `LLM_MODEL`；可指向更小模型进一步降延迟 |
-| `MIXED_PARALLEL` | `false` | mixed 路由是否并行（单卡实测无收益，故默认串行） |
-| `QA_SENTENCE_ALIGNMENT` | `false` | 是否启用 QA 逐句归因（每题约 +100s，建议仅评估用） |
-| `QA_MODE` | `rule_first` | QA 策略：`rule_first`（规则先行，能判定则跳过 LLM）/ `llm` / `rule_only` |
 | `ANSWER_CACHE_ENABLED` | `true` | 回答缓存（精确匹配：改写后问题 + 模型名） |
+
+运行时已固化：Router=`auto`、mixed 串行、QA=`rule_first`、在线始终 LLM 重排。逐句归因仅离线评估 `--align`。
 
 > 模板见 [`.env.example`](.env.example)；`.env` 已被 gitignore，**不要覆盖已有 `.env`**。
 
@@ -258,7 +256,7 @@ uv run pytest --run-slow       # 全量（130 个）
 | RAG | `test_rag.py`、`test_rag_agent.py`、`test_rerank.py`、`test_reranker_pluggable.py` |
 | Agent / 工作流 | `test_tool_agent.py`、`test_main_graph.py`、`test_e2e.py` |
 | 可靠性 / 记忆 | `test_qa.py`、`test_qa_rules.py`、`test_qa_retry_loop.py`、`test_citation_align.py`、`test_memory.py`、`test_query_rewrite.py` |
-| 评估 / 缓存 | `test_evaluation.py`、`test_cache.py`、`test_router_rules.py` |
+| 评估 / 缓存 | `test_evaluation.py`、`test_cache.py`、`test_router_rules.py`、`test_product_clarify.py` |
 | 接口 / 前端 | `test_api.py`、`test_frontend.py`（含 Node DOM 冒烟）、`test_streaming.py`、`test_health.py` |
 
 ---
@@ -310,3 +308,4 @@ uv run python -m app.scripts.evaluate
 4. ~~设 `OLLAMA_MAX_LOADED_MODELS=1`~~ ✅ 已配置
 5. 引入 Memory 摘要（历史压缩）→ 长对话上下文有界
 6. 知识库增大后复测 Reranker 效果
+7. ~~品类模糊题 Tool 漏调~~ ✅ 已实现：纯品类短查询（如「键盘」）强制 `search_products`，多结果列选项澄清并跳过 synthesis

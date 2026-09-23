@@ -36,12 +36,11 @@ def retrieve(
     *,
     top_n: int | None = None,
     rerank: bool = False,
-    reranker_impl: str | None = None,
 ) -> list[dict]:
     """检索候选片段。
 
-    rerank=False：向量 Top-K，评测基线，也是关闭重排时的召回。
-    rerank=True：向量 Top-K 再重排到 Top-N。reranker_impl 只为旧评测签名保留。
+    rerank=False：向量 Top-K（评测基线）。
+    rerank=True：向量 Top-K 再 LLM 重排到 Top-N。
     """
     k = top_k
     if k is None:
@@ -50,19 +49,17 @@ def retrieve(
     if not rerank:
         return candidates
     n = top_n if top_n is not None else settings.rerank_top_n
-    return reranker.get_reranker(reranker_impl).rerank(query, candidates, n)
+    return reranker.get_reranker().rerank(query, candidates, n)
 
 
 def retrieve_for_answer(query: str) -> list[dict]:
-    """在线问答唯一检索入口。"""
-    if settings.rag_rerank_enabled:
-        return retrieve(
-            query,
-            top_k=settings.rerank_top_k,
-            top_n=settings.rerank_top_n,
-            rerank=True,
-        )
-    return retrieve(query, top_k=settings.rag_top_k)
+    """在线问答唯一检索入口：向量 Top-K → LLM 重排 → Top-N。"""
+    return retrieve(
+        query,
+        top_k=settings.rerank_top_k,
+        top_n=settings.rerank_top_n,
+        rerank=True,
+    )
 
 
 def compose_answer(query: str, contexts: list[dict]) -> dict:

@@ -73,7 +73,7 @@ Supervisor 是**架构角色**（工作流控制与任务路由），不是某�
 
 - 职责：理解请求 → 判断任务类型（rag / tool / mixed）→ 生成结构化路由 `{route, reason, tasks}`
 - 不直接回答、不访问 MySQL/Chroma、不执行 SQL/检索/Tool
-- 决策链（`ROUTER_MODE=auto` 默认）：
+- 决策链（已固化）：
   1. **RulePreCheck**（0 次 LLM，毫秒级）：实体正则（`ORD\d{6,}` / `P\d{3}` / `U\d{3,4}`）+ 政策词 + 业务查询词 → 直接路由
   2. **Lightweight Router**：精简提示词 + `with_structured_output`
   3. **Full Prompt 复判**：完整提示词再判一次
@@ -113,10 +113,9 @@ Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 
 ### 2.4 mixed 节点（RAG ∥ Tool）
 
-- RAG 与 Tool **互不依赖**，可用 `ThreadPoolExecutor` 并发执行
-- 为何不用图级 fan-out：两个子图都读取 state key `query`，并行会产生**键冲突**，故在节点内并发调用（各自独立输入）
-- **默认串行**（`MIXED_PARALLEL=false`）：单卡 GPU 上 Ollama 推理本身串行，实测并行无收益（并行 180.7/205.8s vs 串行 148.7/199.3s）
-- 并发时用 `contextvars.copy_context()` 传播上下文，保证 profiling 埋点跨线程生效
+- RAG 与 Tool **互不依赖**，在 `mixed_node` 内**串行**执行
+- 为何不用图级 fan-out：两个子图都读取 state key `query`，并行会产生**键冲突**
+- 曾尝试 `ThreadPoolExecutor` 并行：单卡 GPU 上 Ollama 推理本身串行，实测无收益甚至更慢，故已固化串行
 
 ### 2.4.1 Reranker（LLM-as-Reranker）
 
@@ -125,10 +124,9 @@ Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 知识库的评测中优于 ONNX cross-encoder，因此不再维护额外的 reranker 模型、
 下载依赖或回退分支。
 
-- 在线链路默认开启：向量 Top-K → LLM 排序 → Top-N
+- 在线链路已固化：向量 Top-K → LLM 排序 → Top-N
 - 片段输入最多 800 字符，降低尾部关键信息被截断的概率
-- 旧 `reranker_impl` 参数仅用于兼容调用签名，任何非 `llm` 值均被忽略并记录告警
-- 热模型实测（2026-09-21，本机 Ollama）：向量检索约 0.03s，加上 LLM 重排约 0.8s。相对后面数秒的生成，重排不是主延迟，因此默认仍开启
+- 热模型实测（2026-09-21，本机 Ollama）：向量检索约 0.03s，加上 LLM 重排约 0.8s。相对后面数秒的生成，重排不是主延迟
 
 ### 2.4.2 Latency Profiling
 
@@ -147,7 +145,7 @@ Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 
 - 检查：是否回答用户问题、是否事实错误、是否与上下文冲突、是否编造、引用是否有效
 - 输出 `{passed, issues, citation_valid, reason}`
-- 可选**逐句归因**（`QA_SENTENCE_ALIGNMENT=true`），见 §4
+- 可选**逐句归因**（仅离线 `evaluate_system --align`），见 §4
 - **QA 不负责路由**：它只判定回答可靠性；不通过时由 retry/replan 回到 Synthesis 或 Supervisor
 
 ### 2.7 有限 Retry
@@ -159,7 +157,7 @@ Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 
 两者都是为了降低单题延迟（实测：LLM 质检占 33s/18%）。
 
-**QA 规则先行**（`QA_MODE=rule_first`，默认）：
+**QA 规则先行**（已固化）：
 
 ```text
 规则硬失败（空答 / 缺溯源 / 未调工具） → 直接 passed=false（0 次 LLM）
@@ -167,7 +165,7 @@ Agent → Tool → queries → Repository → SQLAlchemy → MySQL
 其余（词面重合度过低，疑似编造）      → 交 LLM 复核
 ```
 
-质检结果带 `checked_by` 字段（`rule` / `llm` / `rule_only`），便于观测。
+质检结果带 `checked_by` 字段（`rule` / `llm` / `fallback`），便于观测。
 
 **回答缓存**：
 
@@ -317,12 +315,14 @@ Query → BGE-M3 → Chroma Top-K → Reranker(Qwen3) → Top-N → Qwen3
 - Tool 统一处理：参数缺失、参数非法、数据不存在、数据库异常、空结果
 - 禁止 `except Exception: pass`
 
-## 8. 关键配置开关
+## 8. 关键配置
 
-| 开关 | 默认 | 作用 |
+| 配置 | 默认 | 作用 |
 | --- | --- | --- |
-| `MIXED_PARALLEL` | `false` | mixed 路由是否并行（单卡无收益，默认串行） |
-| `QA_SENTENCE_ALIGNMENT` | `false` | 是否启用逐句归因（延迟明显） |
-| `RAG_TOP_K` | `4` | RAG 检索条数 |
-| `RERANK_TOP_K` / `RERANK_TOP_N` | `6` / `3` | Rerank 候选数与最终条数 |
+| `RAG_TOP_K` | `4` | 评测基线向量召回条数 |
+| `RERANK_TOP_K` / `RERANK_TOP_N` | `6` / `3` | 在线 RAG：候选数与重排后条数 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `500` / `50` | 文档切分参数 |
+| `ROUTER_LLM_MODEL` | 空 | Router 专用模型（空则复用主模型） |
+| `ANSWER_CACHE_ENABLED` | `true` | 回答缓存 |
+
+运行时已固化：Router 分层升级、mixed 串行、QA 规则先行、在线始终 LLM 重排。逐句归因仅 `--align`。

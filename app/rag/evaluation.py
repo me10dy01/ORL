@@ -37,12 +37,8 @@ def evaluate(
     cases: list[tuple[str, list[str]]] | None = None,
     top_n: int = 2,
     top_k: int = 6,
-    reranker_impl: str | None = None,
 ) -> dict:
-    """对测试集运行 Baseline 与 Optimized 检索，返回对比指标。
-
-    项目统一使用 LLM-as-Reranker；``reranker_impl`` 仅为兼容旧调用签名保留。
-    """
+    """对测试集运行 Baseline 与 Optimized 检索，返回对比指标。"""
     cases = cases or RAG_EVAL_CASES
     base_hits = opt_hits = 0
     base_rr = opt_rr = 0.0
@@ -55,7 +51,6 @@ def evaluate(
             top_k=top_k,
             top_n=top_n,
             rerank=True,
-            reranker_impl=reranker_impl,
         )
         bh = _hit(base, keywords)
         oh = _hit(opt, keywords)

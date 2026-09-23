@@ -24,7 +24,7 @@ def test_rerank_returns_top_n() -> None:
 
 def test_llm_reranker_not_worse_than_baseline() -> None:
     """LLM-as-Reranker 不劣于基线（Phase 10 原始验收标准）。"""
-    report = evaluate(top_n=2, top_k=6, reranker_impl="llm")
+    report = evaluate(top_n=2, top_k=6)
     assert report["optimized"]["hit"] >= report["baseline"]["hit"]
     assert report["optimized"]["mrr"] >= report["baseline"]["mrr"]
 

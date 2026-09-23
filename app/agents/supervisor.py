@@ -26,6 +26,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from app import profiling
+from app.agents.intent_keywords import (
+    FACT_KEYWORDS,
+    KNOWLEDGE_KEYWORDS,
+    POLICY_KEYWORDS,
+    PRODUCT_SHORT_QUERY_MAX_LEN,
+    PRODUCT_WORDS,
+    TOOL_KEYWORDS,
+)
 from app.config import get_settings
 from app.llm import get_structured_model
 
@@ -100,34 +108,6 @@ _PRODUCT_RE = re.compile(r"P\d{3}", re.IGNORECASE)
 # SKU 型号：字母开头 + 2~3 位数字（K87 / M27），词边界避免误伤英文单词
 _SKU_RE = re.compile(r"\b[A-Z]\d{2,3}\b", re.IGNORECASE)
 
-# 政策/知识类意图（→ rag）
-_POLICY_KEYWORDS = (
-    "退货", "退款", "换货", "退换", "退", "保修", "售后", "维修",
-    "发货", "物流", "快递", "运费", "包邮", "政策", "规则", "条款",
-    "会员", "积分", "等级", "以旧换新", "质保", "无理由", "发票",
-)
-# 业务数据查询意图（→ tool）
-_TOOL_KEYWORDS = (
-    "多少钱", "价格", "价位", "贵不贵", "打折", "优惠价", "卖多少", "售价",
-    "库存", "有货", "没货", "缺货", "现货", "还有多少",
-    "订单状态", "我的订单", "下单时间", "什么时候到", "发货了吗", "到哪了",
-    "到了没有", "到了没",
-)
-# 价格/库存属于业务事实：与政策词同现时升级为 mixed 而非 rag
-_FACT_KEYWORDS = (
-    "多少钱", "价格", "价位", "库存", "有货", "没货", "现货", "还有多少",
-    "卖多少", "售价",
-)
-
-# 商品品类词：**仅由商品词构成的短查询**（如"键盘"）意图是商品检索 → tool
-_PRODUCT_WORDS = (
-    "键盘", "鼠标", "耳机", "充电器", "数据线", "移动电源",
-    "显示器", "音箱", "支架", "配件", "电脑", "平板",
-)
-# 企业信息类话题（门店/实体店/营业时间等）：属知识库内容而非业务数据 → rag
-_KNOWLEDGE_KEYWORDS = ("门店", "实体店", "营业时间", "营业", "官网", "客服电话", "公司地址")
-
-
 def _has_business_entity(query: str) -> bool:
     """是否出现订单号/用户ID/商品ID 等强业务实体。"""
     return bool(
@@ -140,11 +120,11 @@ def rule_route(query: str) -> tuple[str, str] | None:
 
     返回 (route, reason)；返回 None 表示规则无法判定，需升级 LLM Router。
     """
-    policy_hits = [k for k in _POLICY_KEYWORDS if k in query]
-    fact_hits = [k for k in _FACT_KEYWORDS if k in query]
-    tool_hits = [k for k in _TOOL_KEYWORDS if k in query]
-    knowledge_hits = [k for k in _KNOWLEDGE_KEYWORDS if k in query]
-    product_hits = [k for k in _PRODUCT_WORDS if k in query]
+    policy_hits = [k for k in POLICY_KEYWORDS if k in query]
+    fact_hits = [k for k in FACT_KEYWORDS if k in query]
+    tool_hits = [k for k in TOOL_KEYWORDS if k in query]
+    knowledge_hits = [k for k in KNOWLEDGE_KEYWORDS if k in query]
+    product_hits = [k for k in PRODUCT_WORDS if k in query]
     has_entity = _has_business_entity(query)
 
     # 强实体 + 政策意图 → mixed
@@ -162,7 +142,7 @@ def rule_route(query: str) -> tuple[str, str] | None:
     if knowledge_hits:
         return "rag", f"规则：企业信息类话题{knowledge_hits}"
     # 仅由商品词构成的短查询 → 商品检索（如"键盘"）
-    if product_hits and not policy_hits and len(query) <= 8:
+    if product_hits and not policy_hits and len(query) <= PRODUCT_SHORT_QUERY_MAX_LEN:
         return "tool", f"规则：纯商品词查询{product_hits}"
     if policy_hits:
         return "rag", f"规则：政策/知识词{policy_hits}"
@@ -203,8 +183,8 @@ def _validate_routing(query: str, result: RoutingResult) -> str | None:
 
     # 3) 一致性冲突：路由 tool 却带明确政策意图且无事实查询词
     if result.route == "tool":
-        policy_hits = [k for k in _POLICY_KEYWORDS if k in query]
-        fact_hits = [k for k in _FACT_KEYWORDS if k in query]
+        policy_hits = [k for k in POLICY_KEYWORDS if k in query]
+        fact_hits = [k for k in FACT_KEYWORDS if k in query]
         if policy_hits and not fact_hits and not _has_business_entity(query):
             return f"输入含政策意图{policy_hits}但路由为 tool"
     return None
@@ -267,18 +247,14 @@ def route_query(
 ) -> RoutingResult:
     """Supervisor 主入口：Rules → LightRouter → FullPrompt → Fallback。
 
-    - auto（默认）：规则高置信直接路由；判定不了/冲突时升级轻量 Router；
-      仍冲突时用完整提示词复判；最后保守 fallback。
-    - rules_only：只用规则（规则判定不了时保守 rag），用于路由准确率基线。
-    - llm：旧行为兼容——始终用完整 SUPERVISOR_PROMPT 调 LLM。
+    规则高置信直接路由；判定不了/冲突时升级轻量 Router；
+    仍冲突时用完整提示词复判；最后保守 fallback。
 
     qa_feedback 非空时（QA FAIL 后重规划）跳过规则直判，由 LLM 结合
     质检反馈重新规划（规则对"上轮为什么不通过"无能为力）。
     """
-    mode = settings.router_mode
-
     # ---- 1) RulePreCheck（0 次 LLM，毫秒级） ----
-    if mode != "llm" and not qa_feedback:
+    if not qa_feedback:
         with profiling.stage("precheck"):
             rule = rule_route(user_query)
         if rule is not None:
@@ -292,21 +268,18 @@ def route_query(
             if _validate_routing(user_query, candidate) is None:
                 return candidate
             # 规则结果与输入特征冲突 → 继续走 LLM Router 升级链
-        elif mode == "rules_only":
-            return _fallback(user_query, "规则无法判定（rules_only 模式，保守 rag）")
 
     extra = _feedback_prompt(qa_feedback)
 
     # ---- 2) Lightweight Router（精简提示词，关闭思考求快） ----
-    if mode != "llm":
-        try:
-            candidate = _route_by_llm(
-                user_query, ROUTER_SHORT_PROMPT + extra, "llm_short", reasoning=False
-            )
-        except Exception:  # 路由失败不能中断主流程，降级到完整提示词
-            candidate = None
-        if candidate is not None and _validate_routing(user_query, candidate) is None:
-            return candidate
+    try:
+        candidate = _route_by_llm(
+            user_query, ROUTER_SHORT_PROMPT + extra, "llm_short", reasoning=False
+        )
+    except Exception:  # 路由失败不能中断主流程，降级到完整提示词
+        candidate = None
+    if candidate is not None and _validate_routing(user_query, candidate) is None:
+        return candidate
 
     # ---- 3) Full Prompt 复判（完整提示词 + 开启思考求准） ----
     try:

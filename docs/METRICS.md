@@ -68,7 +68,7 @@ q_rag_001, q_tool_001, q_mixed_001, q_multi_001, q_err_001, q_amb_001
 
 子集：`q_rag_002, q_rag_004, q_tool_001, q_tool_002, q_mixed_001, q_multi_001`（rag×2 / tool×2 / mixed×1 / multi_turn×1）。
 
-| 指标 | Baseline（`ROUTER_MODE=llm`） | Optimized（`ROUTER_MODE=auto`，默认） |
+| 指标 | Baseline（当时 `ROUTER_MODE=llm`） | Optimized（分层 `auto`，现已固化） |
 | --- | ---: | ---: |
 | Routing Accuracy | 100.00% | 100.00% |
 | Tool Calling Accuracy | 100.00% | 100.00% |
@@ -87,7 +87,7 @@ q_rag_001, q_tool_001, q_mixed_001, q_multi_001, q_err_001, q_amb_001
 | 方案 | 准确率 | 平均延迟 | 每题 LLM 调用 |
 | --- | ---: | ---: | ---: |
 | Baseline（legacy 单级 LLM） | 17/20（85%） | 6.79s | 1 次 |
-| Optimized（`auto`） | **20/20（100%）** | **0.07s** | 19 题 0 次 / 1 题 1 次 |
+| Optimized（分层升级，现已固化） | **20/20（100%）** | **0.07s** | 19 题 0 次 / 1 题 1 次 |
 
 **延迟剖析前后对比**（`uv run python -m app.scripts.profile_latency`，6 题，清缓存）：
 
@@ -113,7 +113,7 @@ q_rag_001, q_tool_001, q_mixed_001, q_multi_001, q_err_001, q_amb_001
 | `cross_encoder` Qwen3-Reranker-0.6B q4 | 1.00 | 0.80 | 3.6s | **0（CPU）** |
 
 > 评测基于初始知识库（5 文档/9 chunks）。当前知识库已扩展至 13 文档/32 chunks，
-> 当前线上重排器为 LLM（`RERANKER_IMPL=llm`，`RAG_RERANK_ENABLED=true`）；
+> 当前线上已固化 LLM 重排（向量 Top-K → LLM → Top-N）；
 > 上表保留为历史选型数据，ONNX cross-encoder 已不再随项目发布。
 
 ## 3.3 大知识库重排评测（构造评测集，观察"知识库规模"的影响）
@@ -187,12 +187,12 @@ Rerank 将部分问题的相关片段从第 2 位提升到第 1 位。
 
 ## 5. 扩展项实测
 
-| 扩展 | 开关 | 实测 | 结论 |
+| 扩展 | 状态 | 实测 | 结论 |
 | --- | --- | --- | --- |
-| **mixed 并行**（RAG ∥ Tool） | `MIXED_PARALLEL`（**默认 false**） | 并行 180.7 / 205.8s vs 串行 148.7 / 199.3s | 单卡 8GB 上 Ollama 推理本身串行，**并行无收益甚至略慢**，故默认串行；多卡 / 远程 LLM / IO 密集时才有效 |
-| **QA Citation 逐句对齐** | `QA_SENTENCE_ALIGNMENT`（默认 false）/ `--align` | 单题 **279.2s** vs 未开启约 **180s** | 准确但**约 +100s**，故默认关闭，建议离线批量跑 |
+| **mixed 并行**（RAG ∥ Tool） | 已固化串行 | 并行 180.7 / 205.8s vs 串行 148.7 / 199.3s | 单卡 8GB 上 Ollama 推理本身串行，**并行无收益甚至略慢** |
+| **QA Citation 逐句对齐** | 仅离线 `--align` | 单题 **279.2s** vs 未开启约 **180s** | 准确但**约 +100s**，建议离线批量跑 |
 | **前端 Markdown 流式渲染** | 默认开启 | 60ms 节流增量渲染 | 回答可读性质变（此前是纯文本），后端零开销 |
-| **专用 Reranker** | — | 显存合计 ≈ 9GB > 空闲 6.8GB | 8GB 卡上**不推荐**（见 [`INTERVIEW.md`](INTERVIEW.md) 6.3） |
+| **专用 Reranker** | 不引入 | 显存合计 ≈ 9GB > 空闲 6.8GB | 8GB 卡上**不推荐**（见 [`INTERVIEW.md`](INTERVIEW.md) 6.3） |
 
 ## 6. 延迟优化实测
 
@@ -208,10 +208,10 @@ Rerank 将部分问题的相关片段从第 2 位提升到第 1 位。
 
 已实施的优化：
 
-| 优化 | 开关 | 实测 |
+| 优化 | 配置 / 行为 | 实测 |
 | --- | --- | --- |
 | **显存驻留**（`num_ctx` 32768 → 4096） | `OLLAMA_NUM_CTX=4096` | 模型 **59% → 100% 驻留显存**；mixed **205.8s → 47.5s** |
-| **QA 规则先行** | `QA_MODE=rule_first`（默认） | **189.2s → 160.9s（−28s）**；`checked_by=rule`（未调 LLM） |
+| **QA 规则先行** | 已固化 | **189.2s → 160.9s（−28s）**；`checked_by=rule`（未调 LLM） |
 | **输出长度限制** | `OLLAMA_NUM_PREDICT=512` + prompt 简明 | 回答 ~700 字 → **199 字**；RAG 单题 **160.9s → 28.2s** |
 | **回答缓存** | `ANSWER_CACHE_ENABLED=true`（默认） | 重复问题 **28.2s → 0.0s**，答案与溯源一致 |
 
@@ -221,6 +221,12 @@ Rerank 将部分问题的相关片段从第 2 位提升到第 1 位。
 
 - 路由、检索命中与溯源在代表性子集上表现稳定。
 - QA 质检全部通过，未出现幻觉导致的失败。
-- 模糊输入（“键盘”）是延迟与工具调用的主要风险点，后续可通过澄清式交互优化。
+- 模糊输入（“键盘”）：已改为强制检索 + 多结果澄清（见 §7.1），不再依赖 LLM 空口作答。
 - 逐句归因适合作为**离线质检**手段：它能定位“哪句没依据”，而不只是“有没有引用”。
 - 已如实记录**负结论**（并行无收益、专用 Reranker 受显存限制），避免为“高级感”堆砌无效优化。
+
+### 7.1 品类模糊澄清（已落地）
+
+纯品类短查询（如「键盘」）在 Tool Agent `init` 规则短路：强制 `search_products`（0 次 LLM），
+多结果时列选项反问；主图 synthesis 对该终稿跳过二次改写。相对原先整链 LLM+质检，延迟应下降，
+且 `tool_calls` 非空，避免 Tool Calling Accuracy 因「空口答」被误伤。

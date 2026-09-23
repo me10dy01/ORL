@@ -1,8 +1,4 @@
-"""LLM-as-Reranker 回归测试。
-
-项目不再提供 ONNX 或 no-op reranker；调用方无论传入何种旧配置，均应使用
-唯一的 LLM 实现，避免运行时悄然回退到效果较差的模型。
-"""
+"""LLM-as-Reranker 回归测试。"""
 
 from __future__ import annotations
 
@@ -17,17 +13,11 @@ def _docs(*contents: str) -> list[dict]:
 
 
 def test_only_llm_reranker_is_exposed() -> None:
-    """唯一公开实现是 LLMReranker，旧模型类不得重新进入代码路径。"""
+    """唯一公开实现是 LLMReranker。"""
     assert isinstance(rr.get_reranker(), rr.LLMReranker)
-    assert isinstance(rr.get_reranker("llm"), rr.LLMReranker)
     assert "OnnxCrossEncoderReranker" not in rr.__all__
     assert "NoopReranker" not in rr.__all__
-
-
-def test_legacy_reranker_name_still_resolves_to_llm(caplog) -> None:
-    """旧配置不导致服务失败，但必须被显式忽略。"""
-    assert isinstance(rr.get_reranker("cross_encoder"), rr.LLMReranker)
-    assert "忽略已移除的 reranker 配置" in caplog.text
+    assert "rerank" not in rr.__all__
 
 
 def test_llm_reranker_short_circuits_when_no_sorting_is_needed(monkeypatch) -> None:

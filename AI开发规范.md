@@ -483,13 +483,12 @@ Top-N = 3
 
 默认配置：
 
-- `RAG_RERANK_ENABLED=true`（默认启用重排）
-- 在线唯一实现是 `LLMReranker`（主 LLM，`reasoning=False`）。失败时保留向量召回顺序
-- `RERANKER_IMPL` 只作兼容字段；非 `llm` 会被忽略，不得再接回 ONNX 或空重排实现
+- 在线路径已固化：向量 Top-K → `LLMReranker` → Top-N。失败时保留向量召回顺序
+- 不得再接回 ONNX 或空重排实现
 
 协议：
 
-`Reranker.rerank(query, documents, top_n)`，工厂 `get_reranker()` 始终返回 `LLMReranker`。
+`Reranker.rerank(query, documents, top_n)`，工厂 `get_reranker()` 返回 `LLMReranker`。
 
 ---
 

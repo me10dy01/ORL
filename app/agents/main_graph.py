@@ -11,10 +11,8 @@ Phase 11：QA/Validator + 有限 Retry（MAX_RETRY=2）。
 
 from __future__ import annotations
 
-import contextvars
 import logging
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TypedDict
 
 from langchain_core.messages import HumanMessage
@@ -28,6 +26,7 @@ from app.agents.rag_agent import rag_agent, run_rag_agent
 from app.agents.supervisor import route_query
 from app.agents.tool_agent import (
     needs_order_identifier,
+    needs_product_clarify,
     run_tool_agent,
     tool_agent,
     user_supplied_text,
@@ -172,60 +171,31 @@ def _route_decision(state: MainState) -> str:
     return state["route"]
 
 
-def mixed_parallel_node(state: MainState) -> dict:
-    """mixed：RAG 与 Tool 互不依赖；默认串行，可配置为并行。
+def mixed_node(state: MainState) -> dict:
+    """mixed：RAG 与 Tool 互不依赖，串行执行。
 
     两个子图都读取 state key "query"，若用图级 fan-out 会产生键冲突，
-    因此在节点内用线程池并发调用子图（各自独立输入，互不干扰）。
+    因此在节点内依次调用子图（各自独立输入）。
 
-    实测（RTX 4060 Laptop 8GB，单卡）：并行无收益（180.7/205.8s vs
-    串行 148.7/199.3s），因为 Ollama 在单卡上串行执行推理；
-    故 settings.mixed_parallel 默认为 False，多卡/远程 LLM 时可开启。
+    单卡 Ollama 上并行无收益（实测更慢），故只保留串行。
     """
     rag_query = _task_query(state["tasks"], "rag")
     tool_query = _task_query(state["tasks"], "tool")
 
-    rag_result: dict | None = None
-    tool_result: dict | None = None
-
-    if settings.mixed_parallel:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures: dict[str, Future] = {}
-            # 每个子线程拷贝独立 context，保证 Profiler 埋点跨线程生效
-            if rag_query:
-                futures["rag"] = pool.submit(
-                    contextvars.copy_context().run, run_rag_agent, rag_query
-                )
-            if tool_query:
-                futures["tool"] = pool.submit(
-                    contextvars.copy_context().run,
-                    run_tool_agent,
-                    tool_query,
-                    state["user_query"],
-                    state.get("history") or [],
-                )
-            if "rag" in futures:
-                rag_result = futures["rag"].result()
-            if "tool" in futures:
-                tool_result = futures["tool"].result()
-    else:
-        if rag_query:
-            rag_result = run_rag_agent(rag_query)
-        if tool_query:
-            tool_result = run_tool_agent(
-                tool_query,
-                user_query=state["user_query"],
-                history=state.get("history") or [],
-            )
-
     updates: dict = {}
-    if rag_result:
+    if rag_query:
+        rag_result = run_rag_agent(rag_query)
         updates["rag_result"] = {
             "answer": rag_result["answer"],
             "sources": rag_result["sources"],
         }
         updates["citations"] = rag_result["sources"]
-    if tool_result:
+    if tool_query:
+        tool_result = run_tool_agent(
+            tool_query,
+            user_query=state["user_query"],
+            history=state.get("history") or [],
+        )
         updates["tool_result"] = tool_result
         # 必须同时回写 tool_calls：QA 规则会据此判断“是否真的调用了业务工具”
         updates["tool_calls"] = tool_result.get("tool_calls", [])
@@ -282,16 +252,15 @@ def synthesis_node(state: MainState) -> dict:
     if route == "rag" and rag_answer and not feedback:
         return {"draft_answer": rag_answer}
 
-    # 只是在追问订单号时，不要再合成，避免模型把示例订单号写进回答。
+    # 只是在追问订单号 / 品类规则终稿时，不要再合成，避免二次改写拖慢或写坏澄清话术。
     tool_answer = tool.get("answer")
-    if (
-        route == "tool"
-        and tool_answer
-        and not (state.get("tool_calls") or [])
-        and not feedback
-        and needs_order_identifier(user_supplied_text(state))
-    ):
-        return {"draft_answer": tool_answer}
+    tool_calls = state.get("tool_calls") or []
+    source = user_supplied_text(state)
+    if route == "tool" and tool_answer and not feedback:
+        if not tool_calls and needs_order_identifier(source):
+            return {"draft_answer": tool_answer}
+        if tool_calls and needs_product_clarify(source) is not None:
+            return {"draft_answer": tool_answer}
 
     try:
         draft = _synthesize(
@@ -321,56 +290,45 @@ def qa_node(state: MainState) -> dict:
     expects_rag = route in ("rag", "mixed")
     expects_tool = route in ("tool", "mixed")
 
-    mode = settings.qa_mode
     qa_dict: dict | None = None
 
     with profiling.stage("qa"):
         # 1) 规则先行：能判定就不调 LLM（实测 LLM 质检约 33s/次）
-        if mode in ("rule_first", "rule_only"):
-            verdict = rule_check(
-                state["draft_answer"],
-                expects_rag=expects_rag,
-                expects_tool=expects_tool,
-                has_citations=has_citations,
-                tool_calls=state.get("tool_calls") or [],
-                context_text=context_text,
-                missing_identifier=needs_order_identifier(user_supplied_text(state)),
-            )
-            if verdict is not None:
-                qa_dict = verdict.model_dump()
-                qa_dict["checked_by"] = "rule"
+        verdict = rule_check(
+            state["draft_answer"],
+            expects_rag=expects_rag,
+            expects_tool=expects_tool,
+            has_citations=has_citations,
+            tool_calls=state.get("tool_calls") or [],
+            context_text=context_text,
+            missing_identifier=needs_order_identifier(user_supplied_text(state)),
+        )
+        if verdict is not None:
+            qa_dict = verdict.model_dump()
+            qa_dict["checked_by"] = "rule"
 
-        # 2) 规则无法判定：交给 LLM 复核（rule_only 模式下保守通过）
+        # 2) 规则无法判定：交给 LLM 复核
         if qa_dict is None:
-            if mode == "rule_only":
+            try:
+                llm_result = validate_answer(
+                    state.get("rewritten_query") or state["user_query"],
+                    state["draft_answer"],
+                    context_text,
+                    has_citations,
+                )
+                qa_dict = llm_result.model_dump()
+                qa_dict["checked_by"] = "llm"
+            except Exception:
+                logger.exception("qa_node LLM 质检失败，保守通过")
                 qa_dict = {
                     "passed": True,
                     "issues": [],
                     "citation_valid": has_citations or not expects_rag,
-                    "reason": "仅规则校验（词面重合度低，未复核）",
-                    "checked_by": "rule_only",
+                    "reason": "QA 检测不可用，保守通过",
+                    "checked_by": "fallback",
                 }
-            else:
-                try:
-                    llm_result = validate_answer(
-                        state.get("rewritten_query") or state["user_query"],
-                        state["draft_answer"],
-                        context_text,
-                        has_citations,
-                    )
-                    qa_dict = llm_result.model_dump()
-                    qa_dict["checked_by"] = "llm"
-                except Exception:
-                    logger.exception("qa_node LLM 质检失败，保守通过")
-                    qa_dict = {
-                        "passed": True,
-                        "issues": [],
-                        "citation_valid": has_citations or not expects_rag,
-                        "reason": "QA 检测不可用，保守通过",
-                        "checked_by": "fallback",
-                    }
 
-        # 3) 可选的逐句归因（默认关闭）：标出无上下文依据的句子
+        # 3) 可选的逐句归因（仅离线 --align）：标出无上下文依据的句子
         if state.get("align_citations"):
             alignment = align_citations(state["draft_answer"], context_parts)
             qa_dict["unsupported_sentences"] = alignment["unsupported_sentences"]
@@ -492,7 +450,7 @@ def build_main_graph():
     graph.add_node("prepare_tool", prepare_tool_node)
     graph.add_node("tool", tool_agent)
     graph.add_node("collect_tool", collect_tool_node)
-    graph.add_node("mixed", mixed_parallel_node)
+    graph.add_node("mixed", mixed_node)
     graph.add_node("synthesis", synthesis_node)
     graph.add_node("qa", qa_node)
     graph.add_node("retry", retry_node)
@@ -614,18 +572,16 @@ def _result_from_state(state: dict, profile: dict) -> dict:
 def iter_chat_events(
     user_query: str,
     conversation_id: str = "default",
-    sentence_alignment: bool | None = None,
+    sentence_alignment: bool = False,
 ) -> Iterator[dict]:
     """唯一的主图执行入口。产出用户可见事件，done 上附带完整 result。
 
     同步调用方读取 done["result"]。流式调用方丢掉 result，只转发可见字段。
+    sentence_alignment 仅离线评估使用（evaluate_system --align）。
     """
-    align = (
-        settings.qa_sentence_alignment
-        if sentence_alignment is None
-        else sentence_alignment
+    initial = _initial_state(
+        user_query, conversation_id, align_citations=sentence_alignment
     )
-    initial = _initial_state(user_query, conversation_id, align_citations=align)
     state: dict = dict(initial)
 
     with profiling.profiler_scope() as prof:
@@ -671,7 +627,7 @@ def iter_chat_events(
 def run_main_graph(
     user_query: str,
     conversation_id: str = "default",
-    sentence_alignment: bool | None = None,
+    sentence_alignment: bool = False,
 ) -> dict:
     """把同一次事件流收完，返回 done 里的结果。不再单独 invoke 主图。"""
     result: dict | None = None
