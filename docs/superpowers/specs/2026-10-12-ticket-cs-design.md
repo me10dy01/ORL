@@ -90,11 +90,28 @@ KnowledgeChunk          # document_id, content, metadata, embedding vector(D)
 
 | 层 | 存储 | MVP |
 | --- | --- | --- |
-| 会话记忆 | `messages` 最近 N 条注入 Bot | 必做 |
+| 会话记忆 | `messages` 最近 N 条（建议 10～20）注入生成 | 必做 |
 | 工单记忆 | `tickets` + `ticket_events` + 建单摘要 | 必做 |
+| 会话槽位 | `conversation_slots`：`last_product_id` / `last_order_id`（可空） | 必做（轻量） |
 | 跨会话长期画像 | 用户档案表 | 不做（二期） |
 
-记忆主存储为 PostgreSQL，不以 Redis / 仅 LLM 上下文为主存储。
+记忆主存储为 PostgreSQL，不以 Redis / 仅 LLM 上下文为主存储。  
+展示给用户与坐席的时间线始终是**原始消息**，不展示改写句。
+
+### 3.2 指代消解（Conversational RAG）
+
+主路径是 **Query Rewrite**，不用「只把历史塞进生成、检索仍用『这个/它』」。
+
+```text
+当前句 + 最近 N 条 messages + 槽位
+  → 无历史且无槽位：原句直接检索
+  → 否则 Query Rewrite：改写成独立完整问句（不回答、不新增事实）
+  → 用改写句做 RAG / Tool
+  → 生成时仍附最近 N 条原文（语气）
+```
+
+槽位补强：消息或 Tool 结果里出现订单号 / 商品 ID 时更新 `last_order_id` / `last_product_id`。Rewrite 漏实体时，Tool 参数优先用槽位。  
+不做：图记忆、跨会话 Memory Agent、仅靠全量历史不改写。长对话摘要留到二期。
 
 ## 4. 系统架构
 
@@ -117,7 +134,7 @@ Ollama 不进 Compose；API 容器通过 `http://host.docker.internal:11434` 访
 
 | 层 | 选型 |
 | --- | --- |
-| API | FastAPI |
+| API | FastAPI；Python 依赖用 **uv**（`pyproject.toml` + `uv.lock`） |
 | Web | Next.js（App Router） |
 | DB | PostgreSQL 16 + PGVector |
 | LLM | Provider 抽象；默认 Ollama，可切 OpenAI 兼容云端 |
@@ -175,7 +192,7 @@ ORL/
        → 只写入 Message，通知坐席侧（轮询可见），不调 Bot
   → 否则：
        1) 规则门：转人工 / 投诉关键词 → handoff 建单
-       2) Bot：取最近 N 条记忆 →（可选改写）→ RAG 与/或 Tool → 生成
+       2) Bot：取最近 N 条 + 槽位 → Query Rewrite → RAG 与/或 Tool → 带历史生成
        3) 若拒答：累计；≥2 → handoff
        4) 否则返回 Bot 回答（可带 citations）
 ```
@@ -224,7 +241,7 @@ ORL/
 ## 7. RAG
 
 1. 文档自 `data/documents/` 加载 → 切分 → `qwen3-embedding:0.6b` → 写入 `KnowledgeChunk`  
-2. 在线：query 嵌入 → PGVector Top-K → 拼上下文 → LLM 生成  
+2. 在线：用 **改写后的 query** 嵌入 → PGVector Top-K → 拼上下文 → LLM 生成（生成 prompt 另附最近原文）  
 3. MVP 不做独立 cross-encoder rerank  
 4. 嵌入维度写入配置；变更嵌入模型必须重建向量  
 
@@ -232,10 +249,10 @@ ORL/
 
 | 阶段 | 内容 |
 | --- | --- |
-| Phase 1（本规格） | 工单闭环 + 单 Bot + RAG/Tool + Docker/PG |
+| Phase 1（本规格） | 工单闭环 + 单 Bot + Query Rewrite + 槽位 + RAG/Tool + Docker/PG |
 | Phase 2 | 业务能力收为 **MCP Server**；Bot 为 MCP Client |
 | Phase 3 | LangGraph：**Triage / Resolve / TicketFill**（及可选坐席 Assist） |
-| 可选 | Redis（pubsub、限流、claim 锁）；LangSmith 调 prompt；Query Rewrite；用户画像 |
+| 可选 | Redis（pubsub、限流、claim 锁）；LangSmith 调 prompt；对话摘要；用户画像 |
 
 接口边界：`services/tools` 与 `services/rag` 保持稳定，便于换成 MCP 或多 Agent 节点而不改 Ticket API。
 
@@ -244,8 +261,8 @@ ORL/
 1. Monorepo 脚手架 + Compose（Postgres/pgvector）+ 种子 User  
 2. JWT 登录 + 空聊天落库  
 3. Ticket 状态机 + handoff API + 坐席队列/结案 UI  
-4. LLM Provider + 简单 Bot 回答  
-5. RAG（embedding + PGVector）+ 只读 Tool  
+4. LLM Provider + Query Rewrite + 槽位 + 简单 Bot 回答  
+5. RAG（embedding + PGVector，检索用改写句）+ 只读 Tool  
 6. AI 预填字段、优先级规则、SSE 打磨、README/演示脚本  
 
 ## 10. 风险与约束
@@ -267,6 +284,8 @@ ORL/
 | DB | PostgreSQL + PGVector（不用本机 MySQL） |
 | Embedding | `qwen3-embedding:0.6b` |
 | LLM | Ollama 默认，可切云端 |
+| Python | uv |
+| 指代 | Query Rewrite（MVP）+ 最近消息 + 订单/商品槽位 |
 | MCP | Phase 2 |
 | Multi-Agent | Phase 3 可插拔 |
 | Redis / LangSmith | 非 MVP |
