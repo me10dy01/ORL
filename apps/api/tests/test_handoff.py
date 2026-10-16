@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from app.config import Settings, get_settings
 from app.db import Base, get_db
 from app.main import app
-from app.models import seed_users
+from app.models import Message, seed_users
 
 
 TEST_DATABASE_URL = "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl"
@@ -18,7 +18,10 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 @pytest.fixture
 def client():
-    test_settings = Settings(database_url=TEST_DATABASE_URL)
+    test_settings = Settings(
+        database_url=TEST_DATABASE_URL,
+        jwt_secret="test-secret-must-be-at-least-32-bytes-long",
+    )
 
     def override_get_settings():
         return test_settings
@@ -61,6 +64,22 @@ def _token(client, username):
     return res.json()["access_token"]
 
 
+def _assert_user_message(client, conversation_id, expected_content):
+    db = SessionLocal()
+    try:
+        messages = (
+            db.query(Message)
+            .filter(Message.conversation_id == conversation_id)
+            .filter(Message.role == "user")
+            .order_by(Message.created_at)
+            .all()
+        )
+        assert len(messages) == 1
+        assert messages[0].content == expected_content
+    finally:
+        db.close()
+
+
 def test_handoff_creates_open_ticket(client):
     token = _token(client, "user1")
     headers = {"Authorization": f"Bearer {token}"}
@@ -74,6 +93,7 @@ def test_handoff_creates_open_ticket(client):
     assert body["ticket_id"]
     assert body["mode"] == "human"
     assert body["rewritten_query"] is None
+    _assert_user_message(client, cid, "转人工")
 
 
 def test_claim_flow(client):
@@ -115,3 +135,4 @@ def test_bot_returns_rewritten_query(client):
     assert body["ticket_id"] is None
     assert body["mode"] == "bot"
     assert body["rewritten_query"] == "运费谁承担"
+    _assert_user_message(client, cid, "运费谁承担")
