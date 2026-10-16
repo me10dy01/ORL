@@ -18,6 +18,10 @@ venv/
 .vscode/
 *.swp
 
+# Local worktrees and subagent progress (not source)
+.worktrees/
+.superpowers/
+
 # OS
 Thumbs.db
 .DS_Store
