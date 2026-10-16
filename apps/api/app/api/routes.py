@@ -3,9 +3,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Annotated, Optional
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from pwdlib import PasswordHash
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_settings
@@ -130,6 +129,24 @@ def chat(
     if conversation is None or conversation.customer_id != user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    def update_slots(found: dict[str, str]) -> dict[str, str | None]:
+        slots_row = db.get(ConversationSlot, conversation.id)
+        merged = merge_slots(
+            {
+                "last_order_id": slots_row.last_order_id,
+                "last_product_id": slots_row.last_product_id,
+            }
+            if slots_row
+            else {},
+            found,
+        )
+        if slots_row is None:
+            slots_row = ConversationSlot(conversation_id=conversation.id)
+            db.add(slots_row)
+        slots_row.last_order_id = merged.get("last_order_id")
+        slots_row.last_product_id = merged.get("last_product_id")
+        return merged
+
     if conversation.mode == "human":
         db.add(
             Message(
@@ -138,6 +155,9 @@ def chat(
                 content=req.message,
             )
         )
+        found = extract_slots(req.message)
+        if found:
+            update_slots(found)
         ticket = (
             db.query(Ticket)
             .filter(Ticket.conversation_id == conversation.id)
@@ -159,6 +179,9 @@ def chat(
                 content=req.message,
             )
         )
+        found = extract_slots(req.message)
+        if found:
+            update_slots(found)
         ticket = Ticket(
             conversation_id=conversation.id,
             status="open",
@@ -191,22 +214,8 @@ def chat(
         .all()
     ]
 
-    slots_row = db.get(ConversationSlot, conversation.id)
     found = extract_slots(req.message)
-    merged = merge_slots(
-        {
-            "last_order_id": slots_row.last_order_id,
-            "last_product_id": slots_row.last_product_id,
-        }
-        if slots_row
-        else {},
-        found,
-    )
-    if slots_row is None:
-        slots_row = ConversationSlot(conversation_id=conversation.id)
-        db.add(slots_row)
-    slots_row.last_order_id = merged.get("last_order_id")
-    slots_row.last_product_id = merged.get("last_product_id")
+    merged = update_slots(found)
 
     complete: Callable[[str], str] = lambda _prompt: req.message
     rewritten = rewrite_query(req.message, history, merged, complete)

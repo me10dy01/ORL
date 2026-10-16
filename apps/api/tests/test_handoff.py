@@ -4,13 +4,29 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app.config import Settings, get_settings
-from app.db import Base, get_db
+from app.db import Base, get_db, reset_engine
 from app.main import app
 from app.models import Message, seed_users
 
 
-TEST_DATABASE_URL = "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl"
+TEST_DATABASE_URL = "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl_test"
 
+
+def _ensure_test_db():
+    default_engine = create_engine(
+        "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl",
+        isolation_level="AUTOCOMMIT",
+    )
+    with default_engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_database WHERE datname='orl_test'")
+        ).scalar()
+        if not exists:
+            conn.execute(text("CREATE DATABASE orl_test"))
+    default_engine.dispose()
+
+
+_ensure_test_db()
 
 engine = create_engine(TEST_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -36,6 +52,7 @@ def client():
     app.dependency_overrides[get_settings] = override_get_settings
     app.dependency_overrides[get_db] = override_get_db
 
+    reset_engine(TEST_DATABASE_URL)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     seed_users(db)
@@ -45,6 +62,7 @@ def client():
         yield c
 
     app.dependency_overrides.clear()
+    reset_engine()
     db = SessionLocal()
     # Delete child rows before parents to avoid foreign-key errors.
     db.execute(text("DELETE FROM ticket_events"))

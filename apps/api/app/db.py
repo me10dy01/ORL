@@ -13,11 +13,22 @@ class Base(DeclarativeBase):
 _engine = None
 
 
-def get_engine():
+def get_engine(url: str | None = None):
     global _engine
-    if _engine is None:
+    if url is not None:
+        _engine = create_engine(url)
+    elif _engine is None:
         _engine = create_engine(get_settings().database_url)
     return _engine
+
+
+def reset_engine(url: str | None = None):
+    global _engine
+    if _engine is not None:
+        _engine.dispose()
+        _engine = None
+    if url is not None:
+        _engine = create_engine(url)
 
 
 def get_session_maker():
