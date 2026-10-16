@@ -1,0 +1,23 @@
+[project]
+name = "orl-api"
+version = "0.1.0"
+description = "Xingchen ticket customer-service API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic-settings>=2.6",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.2",
+  "pyjwt>=2.9",
+  "pwdlib[bcrypt]>=0.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "httpx>=0.27"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

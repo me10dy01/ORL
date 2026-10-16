@@ -1,0 +1,13 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: orl
+      POSTGRES_PASSWORD: orl
+      POSTGRES_DB: orl
+    ports:
+      - "5432:5432"
+    volumes:
+      - orl_pg:/var/lib/postgresql/data
+volumes:
+  orl_pg:
