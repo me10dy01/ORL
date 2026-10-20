@@ -1,0 +1,137 @@
+body {
+  margin: 0;
+  background: #f5f7fa;
+  color: #1c2430;
+}
+
+main {
+  min-height: 100vh;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 24px 24px;
+  box-sizing: border-box;
+}
+
+.shell > .workspace {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  min-height: calc(100vh - 120px);
+}
+
+.sidebar {
+  width: 300px;
+  flex: none;
+}
+
+.sidebar .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.sidebar .ant-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.sidebar .ant-list-item {
+  display: block;
+  padding-inline: 12px;
+}
+
+.sidebar .ant-list-item .ant-tag {
+  white-space: nowrap;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+.content .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+}
+
+.bubble-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.bubble {
+  width: fit-content;
+  max-width: 78%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(28, 36, 48, 0.04);
+  overflow-wrap: break-word;
+}
+
+.bubble .meta {
+  display: block;
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: #22356f;
+  border-color: #22356f;
+  color: #fff;
+}
+
+.bubble.user .meta {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.bubble.assistant,
+.bubble.agent {
+  align-self: flex-start;
+}
+
+.bubble.system {
+  align-self: center;
+  max-width: none;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: #64748b;
+  padding: 0;
+}
+
+.status-line {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef2ff;
+  color: #22356f;
+  font-size: 13px;
+}
+
+.login-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(100vh - 120px);
+}

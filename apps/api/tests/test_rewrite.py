@@ -20,7 +20,17 @@ def test_extract_and_merge_slots():
     found = extract_slots("订单 ORD12345678 里的 P001")
     assert found["last_order_id"] == "ORD12345678"
     assert found["last_product_id"] == "P001"
+    identity = extract_slots("我叫张三，手机13800001111")
+    assert identity["last_name"] == "张三"
+    assert identity["last_phone"] == "13800001111"
     assert merge_slots({"last_product_id": "P002"}, {"last_order_id": "ORD12345678"}) == {
         "last_product_id": "P002",
         "last_order_id": "ORD12345678",
     }
+
+
+def test_phone_or_name_triggers_rewrite():
+    def fake(_: str) -> str:
+        return "张三的订单到哪了"
+
+    assert rewrite_query("到哪了", [], {"last_name": "张三"}, fake) == "张三的订单到哪了"

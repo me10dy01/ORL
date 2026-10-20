@@ -9,5 +9,48 @@ services:
       - "5432:5432"
     volumes:
       - orl_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orl -d orl"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no --maxmemory 64mb
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://orl:orl@db:5432/orl
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      LLM_MODEL: qwen3.5:4b
+      EMBEDDING_MODEL: qwen3-embedding:0.6b
+      JWT_SECRET: dev-only-change-me
+      REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
 volumes:
   orl_pg:

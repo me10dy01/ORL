@@ -1,104 +1,10 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-
-from app.config import Settings, get_settings
-from app.db import Base, get_db, reset_engine
-from app.main import app
-from app.models import Message, seed_users
-
-
-TEST_DATABASE_URL = "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl_test"
-
-
-def _ensure_test_db():
-    default_engine = create_engine(
-        "postgresql+psycopg://orl:orl@127.0.0.1:5432/orl",
-        isolation_level="AUTOCOMMIT",
-    )
-    with default_engine.connect() as conn:
-        exists = conn.execute(
-            text("SELECT 1 FROM pg_database WHERE datname='orl_test'")
-        ).scalar()
-        if not exists:
-            conn.execute(text("CREATE DATABASE orl_test"))
-    default_engine.dispose()
-
-
-_ensure_test_db()
-
-engine = create_engine(TEST_DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-
-@pytest.fixture
-def client():
-    test_settings = Settings(
-        database_url=TEST_DATABASE_URL,
-        jwt_secret="test-secret-must-be-at-least-32-bytes-long",
-    )
-
-    def override_get_settings():
-        return test_settings
-
-    def override_get_db():
-        db = SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_settings] = override_get_settings
-    app.dependency_overrides[get_db] = override_get_db
-
-    reset_engine(TEST_DATABASE_URL)
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    seed_users(db)
-    db.close()
-
-    with TestClient(app) as c:
-        yield c
-
-    app.dependency_overrides.clear()
-    reset_engine()
-    db = SessionLocal()
-    # Delete child rows before parents to avoid foreign-key errors.
-    db.execute(text("DELETE FROM ticket_events"))
-    db.execute(text("DELETE FROM tickets"))
-    db.execute(text("DELETE FROM messages"))
-    db.execute(text("DELETE FROM conversation_slots"))
-    db.execute(text("DELETE FROM conversations"))
-    db.execute(text("DELETE FROM users"))
-    db.commit()
-    db.close()
-    Base.metadata.drop_all(bind=engine)
-
-
 def _token(client, username):
     res = client.post("/api/auth/login", json={"username": username, "password": "demo1234"})
     assert res.status_code == 200
     return res.json()["access_token"]
 
 
-def _assert_user_message(client, conversation_id, expected_content):
-    db = SessionLocal()
-    try:
-        messages = (
-            db.query(Message)
-            .filter(Message.conversation_id == conversation_id)
-            .filter(Message.role == "user")
-            .order_by(Message.created_at)
-            .all()
-        )
-        assert len(messages) == 1
-        assert messages[0].content == expected_content
-    finally:
-        db.close()
-
-
-def test_handoff_creates_open_ticket(client):
+def test_handoff_creates_open_ticket(client, messages_for):
     token = _token(client, "user1")
     headers = {"Authorization": f"Bearer {token}"}
     conv = client.post("/api/conversations", headers=headers)
@@ -111,7 +17,49 @@ def test_handoff_creates_open_ticket(client):
     assert body["ticket_id"]
     assert body["mode"] == "human"
     assert body["rewritten_query"] is None
-    _assert_user_message(client, cid, "转人工")
+    assert body["assistant_message"] is None
+    assert [item for item in messages_for(cid) if item[0] == "user"] == [("user", "转人工")]
+
+
+def test_overlapping_claims_only_one_succeeds(client):
+    import threading
+    import time
+
+    from app.domain.tickets import claim_if_open
+    from app.models import User
+    from tests.conftest import SessionLocal
+
+    user_headers = {"Authorization": f"Bearer {_token(client, 'user1')}"}
+    conv = client.post("/api/conversations", headers=user_headers)
+    chat = client.post(
+        "/api/chat",
+        headers=user_headers,
+        json={"conversation_id": conv.json()["conversation_id"], "message": "转人工"},
+    )
+    tid = chat.json()["ticket_id"]
+    setup = SessionLocal()
+    agent_id = setup.query(User).filter(User.username == "agent1").one().id
+    setup.close()
+
+    first = SessionLocal()
+    second = SessionLocal()
+    try:
+        assert claim_if_open(first, tid, agent_id) is True
+        outcome: dict[str, bool] = {}
+
+        def loser():
+            outcome["ok"] = claim_if_open(second, tid, agent_id)
+
+        thread = threading.Thread(target=loser)
+        thread.start()
+        time.sleep(0.5)
+        first.commit()
+        thread.join(5)
+        assert outcome["ok"] is False
+        second.rollback()
+    finally:
+        first.close()
+        second.close()
 
 
 def test_claim_flow(client):
@@ -140,7 +88,32 @@ def test_claim_flow(client):
     assert conflict.status_code == 409
 
 
-def test_bot_returns_rewritten_query(client):
+def test_close_returns_conversation_to_bot(client, messages_for):
+    user_headers = {"Authorization": f"Bearer {_token(client, 'user1')}"}
+    agent_headers = {"Authorization": f"Bearer {_token(client, 'agent1')}"}
+    conv = client.post("/api/conversations", headers=user_headers)
+    cid = conv.json()["conversation_id"]
+
+    chat = client.post("/api/chat", headers=user_headers, json={"conversation_id": cid, "message": "转人工"})
+    tid = chat.json()["ticket_id"]
+    client.post(f"/api/tickets/{tid}/claim", headers=agent_headers)
+    client.post(f"/api/tickets/{tid}/transition", headers=agent_headers, json={"action": "resolve"})
+    client.post(f"/api/tickets/{tid}/transition", headers=agent_headers, json={"action": "close"})
+
+    follow = client.post(
+        "/api/chat",
+        headers=user_headers,
+        json={"conversation_id": cid, "message": "你好"},
+    )
+    assert follow.status_code == 200
+    body = follow.json()
+    assert body["mode"] == "bot"
+    assert body["ticket_id"] is None
+    contents = [content for _, content in messages_for(cid) if _ == "system"]
+    assert any(item.startswith("人工已处理：") for item in contents)
+
+
+def test_bot_returns_rewritten_query(client, messages_for):
     token = _token(client, "user1")
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -153,4 +126,6 @@ def test_bot_returns_rewritten_query(client):
     assert body["ticket_id"] is None
     assert body["mode"] == "bot"
     assert body["rewritten_query"] == "运费谁承担"
-    _assert_user_message(client, cid, "运费谁承担")
+    assert body["assistant_message"] == "这是一条普通回复"
+    assert ("user", "运费谁承担") in messages_for(cid)
+    assert ("assistant", "这是一条普通回复") in messages_for(cid)
