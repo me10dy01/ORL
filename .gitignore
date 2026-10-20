@@ -9,6 +9,8 @@ dist/
 # Virtual env
 .venv/
 venv/
+node_modules/
+.next/
 
 # Env / secrets
 .env
