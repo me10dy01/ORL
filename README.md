@@ -1,6 +1,33 @@
 # ORL 智能客服工单
 
-星辰数码商城的客服机器人先回答，答不了或用户要求人工时建立工单，人工客服再接单并结案。
+星辰数码商城的客服演示系统：机器人先答（RAG 检索 + 订单/库存工具调用），答不了或用户要求时自动建工单转人工，人工客服认领、回复、处理、结案。
+
+## 架构总览
+
+```mermaid
+flowchart LR
+    B["浏览器 Web<br/>Next.js :3000"] -- "REST + SSE" --> A["API<br/>FastAPI :8000"]
+    A --> DB[("Postgres 16 + pgvector")]
+    A --> R[("Redis<br/>限流 + 事件广播")]
+    A -- "host.docker.internal:11434" --> O["Ollama（宿主机）<br/>qwen3.5:4b / qwen3-embedding"]
+    M["独立 MCP :8001（可选）"] --> DB
+```
+
+- 四个容器：`db` / `redis` / `api` / `web`，Ollama 留在宿主机，API 容器经 `host.docker.internal` 访问。
+- 浏览器直连 API（`NEXT_PUBLIC_API_URL=http://127.0.0.1:8000` 构建期注入 web 镜像）。
+- 独立 MCP 不进 Compose，给外部工具调用，查订单需带登录 JWT。
+
+## 技术栈
+
+| 层 | 选型 |
+| --- | --- |
+| API | FastAPI + SQLAlchemy 2.0 + psycopg3 |
+| 检索 | pgvector（cosine，1024 维） |
+| LLM | Ollama 本地模型（对话 + 嵌入） |
+| 编排 | LangGraph（triage / resolve / ticket_fill） |
+| 工具 | MCP SDK（进程内 + 独立 8001 双形态） |
+| 前端 | Next.js 15 App Router + Ant Design 5 |
+| 测试 | pytest，独立 `orl_test` 库 + 假模型注入 |
 
 ## 启动
 
@@ -72,3 +99,41 @@ curl.exe -s -X POST http://127.0.0.1:8000/api/tickets/TICKET_ID/transition -H "A
 ```
 
 把 `TICKET_ID` 换成转人工返回的工单号。健康检查是 `curl.exe http://127.0.0.1:8000/health`。
+
+## API 一览
+
+| 方法 + 路径 | 说明 | 权限 |
+| --- | --- | --- |
+| `POST /api/auth/login` | 登录，返回 JWT + role | 公开 |
+| `POST /api/conversations` | 新建会话 | 顾客 |
+| `GET /api/conversations/me` | 我的会话列表（含预览） | 顾客 |
+| `GET /api/conversations/{id}` | 会话消息记录 | 本人 |
+| `POST /api/chat` | 聊天，一次返回完整 JSON | 顾客 |
+| `POST /api/chat/stream` | 聊天，SSE 流式（meta/status/token/reset/done） | 顾客 |
+| `GET /api/tickets?status=` | 工单列表（按优先级排序） | 坐席 |
+| `GET /api/tickets/events` | 工单变更事件流（SSE） | 坐席 |
+| `GET /api/tickets/{id}` | 工单详情（消息/事件/顾客档案） | 坐席 |
+| `POST /api/tickets/{id}/claim` | 认领工单（并发安全） | 坐席 |
+| `POST /api/tickets/{id}/messages` | 坐席回复 | 认领人 |
+| `POST /api/tickets/{id}/transition` | resolve / close / cancel | 坐席 |
+| `GET /health` | 健康检查 | 公开 |
+
+## 测试
+
+```powershell
+cd apps/api
+uv run pytest -q
+```
+
+61 个用例全部通过。测试只连 `orl_test` 库（不存在会自动创建），假模型注入代替 Ollama，无需网络。
+
+## 目录结构
+
+```
+ORL/
+├── apps/api/          # FastAPI：路由、服务层、LangGraph、MCP、测试
+├── apps/web/          # Next.js：登录 / 顾客聊天 / 坐席台
+├── data/documents/    # RAG 政策语料（markdown）
+├── docker-compose.yml # db / redis / api / web
+└── README.md          # 本文件
+```

@@ -24,6 +24,10 @@ node_modules/
 .worktrees/
 .superpowers/
 
+# Personal study notes (kept local only)
+teach.md
+meeting.md
+
 # OS
 Thumbs.db
 .DS_Store
