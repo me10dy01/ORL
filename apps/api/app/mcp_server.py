@@ -1,3 +1,15 @@
+"""MCP 工具服务：同一份工具实现，两种暴露形态。
+
+形态一（进程内）：聊天工具循环通过 mcp_client.call_tool 直调本模块注册的工具，
+    身份/数据库走 contextvar（tool_request），零网络开销。
+形态二（独立服务）：python -m app.mcp_server 起在 8001 端口，走标准 MCP 协议，
+    任何外部 Agent 都能接；身份由 JwtContextMiddleware 从 Bearer token 解析，
+    写入另一个 contextvar（mcp_http_user）。
+
+安全核心（面试 ⭐⭐⭐）：lookup_orders 显式 del 掉调用方传入的 user_id/slots——
+LLM 是不可信输入，身份永远来自服务端上下文，不来自模型参数。
+"""
+
 from contextvars import ContextVar
 from collections.abc import Callable
 
@@ -15,20 +27,25 @@ mcp = MCPServer("orl-tools")
 
 
 class ToolRequest(BaseModel):
+    """进程内调用时，工具循环注入的上下文包。db/embed 复用请求作用域，省一次建连。"""
+
     model_config = {"arbitrary_types_allowed": True}
 
     db: Session
     embed: Callable[[str], list[float]]
     user_id: str = ""
-    message: str = ""
+    message: str = ""  # 用户原话：订单号正则只从它提取，不信模型转述
     slots: dict = {}
 
 
+# 两个 contextvar 对应两种形态：进程内身份 / HTTP 身份。互不干扰。
 tool_request: ContextVar[ToolRequest | None] = ContextVar("tool_request", default=None)
 mcp_http_user: ContextVar[str] = ContextVar("mcp_http_user", default="")
 
 
 class LookupOrdersResult(BaseModel):
+    """订单查询的结构化返回：text 给模型组织回答，order_id/candidates 给工单事件用。"""
+
     text: str
     order_id: str | None = None
     candidates: list[str] = []
@@ -36,10 +53,11 @@ class LookupOrdersResult(BaseModel):
 
 @mcp.tool()
 def search_knowledge(query: str) -> str:
-    """Search the knowledge base and return matching passages."""
+    """知识库检索（RAG 取数侧）。独立形态下自建 db 会话并在 finally 关闭。"""
     current = tool_request.get()
     owned = False
     if current is None:
+        # 独立 MCP 服务被外部调用：没有注入的 db，自己建一个短生命周期会话。
         from app.db import get_session_maker
         from app.llm import embed
 
@@ -52,6 +70,7 @@ def search_knowledge(query: str) -> str:
     try:
         chunks = search_chunks(db, embed_fn(query))
     except Exception:
+        # 检索失败返回空串而不是抛错——让模型走「知识库暂无依据」的拒答路径。
         return ""
     finally:
         if owned:
@@ -61,10 +80,16 @@ def search_knowledge(query: str) -> str:
 
 @mcp.tool()
 def lookup_orders(user_id: str = "", message: str = "", slots: dict | None = None) -> LookupOrdersResult:
-    """Look up orders for the signed-in user. Caller-supplied user ids and slots are ignored."""
+    """查询当前用户订单。归属安全的最关键一行就是下面的 del。
+
+    del user_id, slots：显式丢弃调用方（可能是被注入的模型）传入的身份字段。
+    即使提示注入成功诱导模型传入别人的 user_id，这行也让它失效——
+    身份只认两个来源：进程内的 tool_request.user_id，或 HTTP 形态的 mcp_http_user。
+    """
     del user_id, slots
     current = tool_request.get()
     if current is not None and current.user_id:
+        # 形态一：进程内调用，身份来自 contextvar。
         try:
             text, order_id, candidates = lookup_context(
                 current.db, current.slots or {}, current.user_id, current.message
@@ -72,6 +97,7 @@ def lookup_orders(user_id: str = "", message: str = "", slots: dict | None = Non
         except Exception:
             return LookupOrdersResult(text="未找到")
         return LookupOrdersResult(text=text, order_id=order_id, candidates=candidates)
+    # 形态二：HTTP 调用，身份来自 JwtContextMiddleware 解析的 token。
     http_user = mcp_http_user.get()
     if not http_user:
         return LookupOrdersResult(text="未找到")
@@ -89,7 +115,7 @@ def lookup_orders(user_id: str = "", message: str = "", slots: dict | None = Non
 
 @mcp.tool()
 def lookup_stock(query: str) -> str:
-    """Look up public product stock by name or product id."""
+    """库存查询：公开数据，无需身份，但形态区分逻辑与 search_knowledge 相同。"""
     current = tool_request.get()
     owned = False
     if current is None:
@@ -111,7 +137,10 @@ def lookup_stock(query: str) -> str:
 def user_id_from_authorization(
     authorization: str | None, db: Session, settings: Settings
 ) -> str:
-    """Return the user id for a login JWT. Invalid tokens return an empty string."""
+    """从 Authorization 头解析并校验 JWT，返回用户 id；任何一步失败都返回空串（匿名）。
+
+    三层校验：签名有效 → payload 里有 sub → sub 对应的用户真实存在。
+    """
     if authorization is None or not authorization.startswith("Bearer "):
         return ""
     token = authorization[7:].strip()
@@ -133,7 +162,11 @@ def user_id_from_authorization(
 
 
 class JwtContextMiddleware:
-    """Store the Bearer user for this HTTP request. Missing tokens stay anonymous."""
+    """ASGI 中间件：每个 HTTP 请求解析一次 Bearer token，把 user id 写入 contextvar。
+
+    用 contextvar 而不是全局变量/请求参数，是因为 MCP 工具函数拿不到 request 对象，
+    而 contextvar 在同一线程/协程上下文里天然隔离并发请求。
+    """
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -160,6 +193,7 @@ class JwtContextMiddleware:
         try:
             await self.app(scope, receive, send)
         finally:
+            # finally 里 reset：请求结束（无论成败）都清空身份，防止串到下一个请求。
             mcp_http_user.reset(token)
 
 

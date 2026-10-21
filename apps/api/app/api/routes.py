@@ -1,3 +1,13 @@
+"""HTTP 路由层：认证、会话、聊天（非流式/SSE 流式）、工单。
+
+面试考点速览：
+- JWT：登录签发 24h token；get_current_user 每次回库取 user（用户被删即 401）
+- 双通道聊天：/api/chat 走 LangGraph 编排；/api/chat/stream 手写串联同逻辑换低延迟
+  （两条路径并存是已知技术债，见 services/graph.py 模块 docstring）
+- SSE 事件协议：token/status/reset/ticket_created/done（reset 语义见 tool_loop）
+- 工单并发安全：claim 用条件 UPDATE 防两个坐席同时抢单
+"""
+
 from collections.abc import Callable
 from datetime import datetime, timezone, timedelta
 import json
@@ -150,6 +160,7 @@ class TransitionRequest(BaseModel):
 
 
 def create_token(user: User, settings: Settings) -> str:
+    """签发 JWT：sub=user.id，role 进 payload 仅作展示用途（鉴权仍以库内 user.role 为准），24h 过期。"""
     payload = {
         "sub": user.id,
         "role": user.role,
@@ -165,6 +176,7 @@ def get_current_user(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> User:
+    """Bearer token 鉴权。验签后仍回库取 user——用户被删除时旧 token 立即失效。"""
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
     token = authorization[7:]
@@ -213,6 +225,7 @@ def _open_ticket(
     category: str,
     summary: str,
 ) -> Ticket:
+    """转人工四件套：建工单 + 写审计事件 + 会话切 human 模式 + 系统消息 + Redis 广播刷新坐席端。"""
     ticket = Ticket(
         conversation_id=conversation.id,
         status="open",
@@ -347,6 +360,7 @@ class _BotContext:
 
 
 def _remember_lookup(db: Session, conversation: Conversation, result) -> None:
+    """把订单查询结果写回会话槽位：记住「最后聊到的订单」和候选列表，供下轮指代消解。"""
     if not result:
         return
     if isinstance(result, dict):
@@ -433,6 +447,7 @@ def chat(
         )
         return merged
 
+    # human 模式：机器人不介入，但要持续提取槽位——坐席能看到最新上下文。
     if conversation.mode == "human":
         db.add(
             Message(
@@ -487,6 +502,7 @@ def chat(
             "user_id": user.id,
         }
     )
+    # handoff 且机器人没产出回复：纯关键词转人工，直接建单。
     if outcome.get("handoff") and not outcome.get("reply"):
         db.add(
             Message(
@@ -509,6 +525,7 @@ def chat(
             rewritten_query=None,
             assistant_message=None,
         )
+    # handoff 且机器人有回复（连续拒答场景）：先把拒答回复落库再建单，对话记录完整。
     if outcome.get("handoff"):
         saved = _persist_bot_reply(
             db,
@@ -548,6 +565,8 @@ def _sse(payload: dict) -> str:
 
 
 def _finished_events(db: Session, req: ChatRequest, result: ChatResponse):
+    """把非流式 chat() 的结果回放成 SSE 事件流——human 模式/关键词转人工走这里，
+    保证前端只认一种通道（SSE），不用区分两条后端路径。"""
     yield _sse({"type": "meta", "conversation_id": req.conversation_id})
     if result.ticket_id:
         yield _sse({"type": "status", "message": "正在转人工"})
@@ -587,6 +606,8 @@ def _bot_events(
     merged: dict,
     rewritten: str,
 ):
+    """流式机器人路径的 SSE 生成器：透传 tool_loop 事件，路由层自己维护 parts
+    以便落库的最终文案与用户看到的一致；连续两次拒答时建单并 reset 清屏。"""
     yield _sse({"type": "meta", "conversation_id": req.conversation_id})
     lookup_box: dict = {"result": None}
     parts: list[str] = []
@@ -667,6 +688,8 @@ def chat_stream(
     complete: Completer,
     embed: Embedder,
 ) -> StreamingResponse:
+    """流式聊天入口。human 模式或关键词转人工直接复用非流式 chat() 再回放成 SSE；
+    其余走 _bot_events 逐 token 透传。"""
     conversation = db.get(Conversation, req.conversation_id)
     if conversation is None or conversation.customer_id != user.id:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -723,6 +746,9 @@ def claim_ticket(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> ClaimResponse:
+    """坐席认领工单。并发安全靠 claim_if_open 的条件 UPDATE
+    （UPDATE ... WHERE status='open'），数据库层面保证只有一个坐席抢到；
+    抢输的收到 409，而不是先读后写产生的竞态。"""
     if user.role != "agent":
         raise HTTPException(status_code=403, detail="Only agents can claim tickets")
     exists = db.scalar(select(Ticket.id).where(Ticket.id == ticket_id))
@@ -751,6 +777,7 @@ def list_tickets(
     db: Annotated[Session, Depends(get_db)],
     status: str = "open",
 ) -> TicketListResponse:
+    """工单列表：用 CASE 表达式把 priority 映射成排序权重（high 最先），同优先级按时间。"""
     _require_agent(user)
     rank = case(
         (Ticket.priority == "high", 0),
@@ -772,6 +799,8 @@ def ticket_events(
     user: CurrentUser,
     request: Request,
 ):
+    """坐席端的工单变更推送：Redis pub/sub → SSE。Redis 不可用时发一条 fallback
+    就结束，前端据此退化为轮询。"""
     _require_agent(user)
     pubsub = listen()
 
@@ -893,6 +922,11 @@ def transition_ticket(
     user: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> ClaimResponse:
+    """工单状态迁移。合法性由 domain.tickets 的状态机校验（非法迁移 409）。
+
+    关单时的收尾三件套：会话切回 bot 模式、工单摘要沉淀进用户画像
+    （下轮对话模型就能看到「上一张工单」）、发系统消息告知顾客。
+    """
     _require_agent(user)
     ticket = db.get(Ticket, ticket_id)
     if ticket is None:

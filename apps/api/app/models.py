@@ -1,3 +1,12 @@
+"""数据模型：9 张表 + 演示种子数据（幂等 upsert，可重复启动）。
+
+表分四组：
+- 账号：User（顾客/坐席共用，role 区分）、UserProfile（跨会话画像）
+- 对话：Conversation（mode=bot/human 决定谁来接）、Message、ConversationSlot（会话槽位）
+- 工单：Ticket（open→in_progress→closed 状态机）、TicketEvent（审计日志）
+- 业务与知识：Product、OrderRecord、KnowledgeChunk（pgvector 向量）
+"""
+
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -17,6 +26,8 @@ password_hash = PasswordHash((BcryptHasher(),))
 
 
 class User(Base):
+    """顾客和坐席共用一个表，role ∈ customer/agent；密码用 bcrypt 哈希。"""
+
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -26,6 +37,8 @@ class User(Base):
 
 
 class Conversation(Base):
+    """mode=bot 时消息走机器人；mode=human 时消息只落库，等坐席人工回复。"""
+
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -36,6 +49,8 @@ class Conversation(Base):
 
 
 class Message(Base):
+    """role ∈ user/assistant/agent/system；system 用于「已转接人工」等状态提示。"""
+
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -50,6 +65,9 @@ class Message(Base):
 
 
 class ConversationSlot(Base):
+    """会话级槽位记忆（指代消解的持久化）。candidate_order_ids 用逗号分隔存字符串——
+    demo 简化，生产环境应单独建表或用 JSON 列。"""
+
     __tablename__ = "conversation_slots"
 
     conversation_id: Mapped[str] = mapped_column(
@@ -63,6 +81,8 @@ class ConversationSlot(Base):
 
 
 class Ticket(Base):
+    """工单。status 状态机 open→in_progress→closed（见 domain/tickets.py）。"""
+
     __tablename__ = "tickets"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -82,6 +102,8 @@ class Ticket(Base):
 
 
 class UserProfile(Base):
+    """跨会话用户画像：姓名/手机/最近商品/上一张工单摘要，注入 prompt 用。"""
+
     __tablename__ = "user_profiles"
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), primary_key=True)
@@ -92,6 +114,8 @@ class UserProfile(Base):
 
 
 class KnowledgeChunk(Base):
+    """知识库分块 + pgvector 向量（1024 维），RAG 检索的最小单位。"""
+
     __tablename__ = "knowledge_chunks"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -109,6 +133,9 @@ class Product(Base):
 
 
 class OrderRecord(Base):
+    """订单。user_id 可空——允许「手机号+姓名」归属的单（未注册下单场景），
+    这类单只能被 tools._allows 的双因子校验路径查到。"""
+
     __tablename__ = "orders"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -127,6 +154,8 @@ class OrderRecord(Base):
 
 
 class TicketEvent(Base):
+    """工单审计日志：created/claim/close 等动作流水，坐席端时间线展示用。"""
+
     __tablename__ = "ticket_events"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
