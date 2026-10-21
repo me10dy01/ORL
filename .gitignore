@@ -46,3 +46,4 @@ eval_report.json
 # `gen_large_kb` + `eval_rerank_large` / `profile_latency` 重建）
 data/eval/chroma_large/
 data/profiling/
+
